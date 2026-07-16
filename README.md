@@ -1,2 +1,137 @@
-# CollagenBiomechanics
-Code used to process and analyse biomechanical data from the paper 'Type I collagen homotrimer alters the intrinsic and viscoelastic tensile properties of tendon'.
+# Type I collagen-driven tendon biomechanics
+
+Analysis code accompanying:
+
+> **Type I collagen homotrimer alters the intrinsic and viscoelastic tensile properties of tendon.**
+Johnson *et al.*
+
+This repository takes the compiled instrument exports and produces per-tendon biomechanical parameters and the figures in the manuscript.
+
+---
+
+## Contents
+
+| File | Summary |
+| --- | --- |
+| `01_biomechanical_processing.py` | Script to calculate per-tendon parameters (Python). 
+| `02_failure_profile_clustering.qmd` | Classification of pull-to-failure profiles (R). |
+| `03_biomechanic_properties_plots.qmd` | Manuscript figures for biomechanics analysis (R). |
+| `04_qPCR_expression_plots` | Manuscript figures for qPCR analysis analysis (R). |
+| `supporting_scripts/make_test_data.sh` | Script used to cut dataset down to a few samples for testing purposes (bash, needs `csvkit`). |
+| `environment.yml` | Python environment. |
+
+---
+
+## Project structure
+
+`raw_data/` and `test_data/` are not included in the repository as they are too large for GitHub. Instructions for data download are included further below. 
+
+```
+CollagenBiomechanics/
+│
+├── raw_data/                      <-- DOWNLOAD FROM DATACAT AND UNZIP HERE
+│   ├── compiled_Force_N_phase_140526.1.csv          # force traces, all samples
+│   ├── compiled_Displacement_mm_phase_140526.1.csv  # displacement traces
+│   ├── compiled_Size_mm_phase_140526.1.csv          # gauge length per segment
+│   ├── compiled_metadata_with_filenames.csv         # one row per recording
+│
+├── test_data/                     <-- CREATED by supporting_scripts/make_test_data.*
+│   └── (same four filenames as raw_data, subset to a few samples)
+│
+├── results/                       <-- CREATED by 01_biomechanical_processing*.py
+│   ├── results_summary.csv                  # one row per tendon
+│   ├── results_summary.xlsx                 # same, with plots embedded
+│   ├── sample_cluster_classifications.csv   # from 02_failure_profile_clustering.qmd
+│   └── plots/                               # per-sample force-time / force-extension PNGs
+│
+├── processed_data/                <-- Inputs for the .qmd notebooks
+│
+├── figures/                       <-- CREATED by 03_biomechanic_properties_plots.qmd
+│   └── *.pdf, *.png                         # manuscript figures
+│
+├── supporting_scripts/
+│   ├── make_test_data.sh
+│
+├── 01_biomechanical_processing.py
+├── 01_biomechanical_processing_revised.py
+├── 02_failure_profile_clustering.qmd
+├── 03_biomechanic_properties_plots.qmd
+├── environment.yml
+├── LICENSE
+└── README.md
+```
+---
+
+## Getting the data
+
+The compiled .csv files are too large for GitHub and are archived separately:
+
+> **DataCat: <!-- TODO: insert DataCat DOI / URL --> **
+> University of Liverpool Research Data Catalogue
+
+1. Download the data archive from the DataCat record above.
+2. Unzip it into `raw_data/` at the root of this repository, so that
+   `raw_data/compiled_Force_N_phase_140526.1.csv` exists.
+3. Check the layout:
+
+   ```bash
+   ls raw_data/
+   ```
+
+`01_biomechanical_processing.py` reads four files from `raw_data/`: the force, displacement and size data, alongside the metadata. 
+
+### Input format
+
+The compiled files are wide: one shared `Time_S` column, then three columns per recording (`SetName`, `Cycle`, and the measurement). Column names are truncated to 31 characters by the Excel export, so the suffixes variously clipped. The script handles this and warns when things can't be matched.
+
+`compiled_metadata_with_filenames.csv` carries one row per recording. The join key is `FileName` (e.g. `210330 MRC Sample C3.2Data.csv`). 
+
+---
+
+## Dependencies
+
+### Python
+
+```bash
+conda env create -f environment.yml
+conda activate collagen-biomechanics
+```
+
+### R
+
+<!-- TODO: record the R environment. 
+       install.packages("renv"); renv::init(); renv::snapshot() -->
+
+---
+
+## Running the analysis
+
+### Quick test run
+
+Build a small subset first. This should only take a few seconds and confirm the environment works before committing to the full dataset:
+
+```bash
+bash supporting_scripts/make_test_data.sh 30    
+python 01_biomechanical_processing.py --raw-dir test_data --results-dir results/test -v
+```
+
+### Full run
+
+```bash
+python 01_biomechanical_processing.py
+```
+
+Reads `raw_data/`, writes `results/results_summary.csv`, `results/results_summary.xlsx` and per-sample PNGs to `results/plots/`. Then, in order:
+
+```bash
+quarto render 02_failure_profile_clustering.qmd
+quarto render 03_biomechanic_properties_plots.qmd
+```
+
+
+## License
+[![CC BY 4.0][cc-by-shield]][cc-by]
+This work is licensed under a [Creative Commons Attribution 4.0 International License][cc-by].
+
+[cc-by]: http://creativecommons.org/licenses/by/4.0/
+[cc-by-shield]: https://img.shields.io/badge/License-CC%20BY%204.0-lightgrey.svg

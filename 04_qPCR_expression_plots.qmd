@@ -1,0 +1,219 @@
+---
+title: "Collagen qPCR"
+subtitle: "Summary plots for paper"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+
+# Summary plots
+
+Relative expression of *Col1a1* and *Col1a2* (normalised to *Rps13*) in tendon and
+bone across three timepoints, plus the *Col1a1*/*Col1a2* ratio. All six panels
+share the same layout, so they are read and plotted through one pipeline.
+
+## Libraries
+
+```{r}
+#| output: false
+#| warning: false
+#| message: false
+library(tidyverse)
+library(ggbeeswarm)   # beeswarm / quasirandom points
+library(cowplot)      # theme_cowplot(), save_plot()
+library(ggtext)       # markdown in strips
+library(glue)
+library(scales)
+```
+
+## Read and tidy
+
+One CSV per gene, tissue and timepoint (Windows `latin1`). `Genotype` arrives
+quoted (e.g. `"""J +/+"""`); the quotes are stripped and combined with `Sex` into
+the x-axis grouping. J = *oim* line, N = *Col1a2*-null.
+
+```{r}
+#| warning: false
+#| message: false
+
+data_dir   <- "./processed_data/qPCR"
+stamp      <- "110726.1"
+timepoints <- c("8wks", "18wks", "52wks")
+
+allele_levels <- c(
+  "Male J +/+", "Male J +/oim", "Male J oim/oim",
+  "Female J +/+", "Female J +/oim", "Female J oim/oim",
+  "Male N +/+", "Male N +/-", "Male N -/-",
+  "Female N +/+", "Female N +/-", "Female N -/-"
+)
+
+expr_files <- tribble(
+  ~Gene,    ~Tissue,  ~prefix,
+  "Col1a1", "tendon", "Col1a1-tendon",
+  "Col1a1", "bone",   "Col1a1-bones",
+  "Col1a2", "tendon", "Col1a2-tendon",
+  "Col1a2", "bone",   "Col1a2-bones"
+)
+
+# `row` preserves file order so Col1a1 and Col1a2 can be paired for the ratio;
+# NAs are therefore dropped only after pairing.
+read_dataset <- function(prefix) {
+  set_names(timepoints) |>
+    map(\(tp) {
+      read_csv(file.path(data_dir, glue("{prefix}-{tp}_{stamp}.csv")),
+               locale = locale(encoding = "latin1"),
+               show_col_types = FALSE) |>
+        mutate(row = row_number())
+    }) |>
+    list_rbind(names_to = "Age") |>
+    transmute(
+      row,
+      Sex,
+      AlleleLabel = factor(paste(Sex, str_remove_all(Genotype, '"')),
+                           levels = allele_levels),
+      Timepoint = factor(Age, levels = timepoints,
+                         labels = c("8 weeks", "18 weeks", "52 weeks")),
+      value = Data
+    )
+}
+
+expr <- expr_files |>
+  mutate(data = map(prefix, read_dataset)) |>
+  select(-prefix) |>
+  unnest(data)
+```
+
+The ratio is derived per sample: the *Col1a1* and *Col1a2* files are matched on
+tissue, timepoint and row position (they carry identical genotype/sex in the same
+order).
+
+```{r}
+ratio <- expr |>
+  pivot_wider(names_from = Gene, values_from = value) |>
+  transmute(Gene = "Col1a1/Col1a2", Tissue, row, Sex, AlleleLabel, Timepoint,
+            value = Col1a1 / Col1a2)
+
+dataset_levels <- c("Col1a1 tendon", "Col1a1 bone",
+                    "Col1a2 tendon", "Col1a2 bone",
+                    "Col1a1/Col1a2 tendon", "Col1a1/Col1a2 bone")
+
+dat_long <- bind_rows(expr, ratio) |>
+  filter(!is.na(value), is.finite(value), value > 0) |>
+  mutate(Dataset = factor(paste(Gene, Tissue), levels = dataset_levels))
+
+# Mean ± SD per group
+group_stats <- dat_long |>
+  summarise(mean = mean(value), sd = sd(value),
+            .by = c(Dataset, AlleleLabel, Timepoint))
+```
+
+## Plotting
+
+Points are coloured by sex; the sex prefix orders the groups and is stripped from
+the tick labels. Expression is plotted on log10, the ratio on log2.
+
+```{r}
+sex_cols <- c(Female = "#E69F00", Male = "#0072B2")
+
+figure_stems <- c(
+  "Col1a1 tendon"        = "Col1a1-tendon",
+  "Col1a1 bone"          = "Col1a1-bone",
+  "Col1a2 tendon"        = "Col1a2-tendon",
+  "Col1a2 bone"          = "Col1a2-bone",
+  "Col1a1/Col1a2 tendon" = "Ratio-tendon",
+  "Col1a1/Col1a2 bone"   = "Ratio-bone"
+)
+
+plot_dataset <- function(dataset_name, style = c("beeswarm", "jitter")) {
+
+  style <- match.arg(style)
+  is_ratio <- str_detect(dataset_name, "/")
+  td <- filter(dat_long,    Dataset == dataset_name)
+  gd <- filter(group_stats, Dataset == dataset_name)
+
+  points <- switch(style,
+    jitter   = geom_jitter(width = 0.1, height = 0, size = 2.5, stroke = 0),
+    beeswarm = geom_beeswarm(size = 2.5, cex = 2.2, stroke = 0)
+  )
+
+  # mean ± SD: whiskers, wide bar at the mean, narrow bars at ± SD
+  whisker <- function(yend) {
+    geom_segment(data = gd, aes(x = AlleleLabel, xend = AlleleLabel,
+                                y = mean, yend = {{ yend }}),
+                 inherit.aes = FALSE, colour = "grey35", linewidth = 0.2)
+  }
+  crossbar <- function(y, width) {
+    geom_crossbar(data = gd, aes(x = AlleleLabel, y = {{ y }},
+                                 ymin = {{ y }}, ymax = {{ y }}),
+                  inherit.aes = FALSE, width = width,
+                  colour = "grey35", linewidth = 0.2)
+  }
+
+  y_scale <- if (is_ratio) {
+    scale_y_continuous(transform = "log2", limits = c(2^-12, 2^16),
+                       breaks = 2^seq(-12, 16, by = 2), labels = label_log(base = 2))
+  } else {
+    scale_y_log10(limits = c(1e-5, 1e5), breaks = 10^(-5:5), labels = label_log())
+  }
+
+  ggplot(td, aes(AlleleLabel, value, colour = Sex)) +
+    points +
+    whisker(mean + sd) +
+    whisker(mean - sd) +
+    crossbar(mean, 0.6) +
+    crossbar(mean + sd, 0.4) +
+    crossbar(mean - sd, 0.4) +
+    facet_grid(. ~ Timepoint, scales = "free_x", space = "free_x") +
+    scale_colour_manual(values = sex_cols) +
+    scale_x_discrete(drop = TRUE, labels = \(x) gsub("^(Male|Female) ", "", x)) +
+    y_scale +
+    labs(x = NULL,
+         y = if (is_ratio) "Relative expression (Col1a2)" else "Relative expression (Rps13)") +
+    theme_cowplot(font_size = 12) +
+    background_grid(major = "y", minor = "none") +
+    theme(
+      legend.position  = "none",
+      axis.text.x      = element_text(angle = 60, hjust = 1, vjust = 1),
+      strip.background = element_blank(),
+      strip.placement  = "outside",
+      strip.text       = element_markdown(size = 12),
+      panel.spacing    = unit(0.3, "lines"),
+      panel.border     = element_rect(colour = "grey70", fill = NA, linewidth = 0.5)
+    )
+}
+```
+
+```{r}
+#| fig-width: 12
+#| fig-height: 4
+walk(dataset_levels, \(d) print(plot_dataset(d)))
+```
+
+## Save figures
+
+```{r}
+dir.create("./figures/qPCR", showWarnings = FALSE)
+
+iwalk(figure_stems, \(stem, dataset_name) {
+  p <- plot_dataset(dataset_name)
+  save_plot(glue("./figures/qPCR/{stem}.pdf"), p, base_width = 12, base_height = 4)
+  save_plot(glue("./figures/qPCR/{stem}.png"), p, base_width = 12, base_height = 4,
+            dpi = 300, bg = "white")
+})
+```
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

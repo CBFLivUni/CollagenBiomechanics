@@ -1,0 +1,352 @@
+---
+title: "Tendon Biomechanics"
+subtitle: "Summary plots for paper"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+
+# Summary plots
+
+## Libraries
+
+```{r}
+#| output: false
+#| warning: false
+#| message: false
+library(tidyverse)
+library(ggbeeswarm)   # beeswarm / quasirandom points
+library(cowplot)      # theme_cowplot(), save_plot()
+library(ggtext)       # italic gene names in strips
+library(glue)
+```
+
+## Assay definitions
+
+One CSV per assay per timepoint. Headers contain en-dashes, so columns are matched by pattern and renamed. `metrics` maps the renamed column to its plot label; `figure` gives the output file stem.
+
+```{r}
+data_dir   <- "./processed_data"
+timepoints <- c("8wks", "18wks", "52wks")
+
+assays <- list(
+  diameter = list(
+    prefix = "Tendon-diameter", stamp = "260626.5",
+    rename = c("Diameter (um)" = "Average diameter (um)"),
+    metrics = c("Average diameter (um)" = "Diameter (um)"),
+    figure  = c("Diameter (um)" = "diameter")
+  ),
+  hysteresis = list(
+    prefix = "Hysteresis", stamp = "080726.2",
+    rename = c(
+      "Hysteresis strain energy density (MPa)" = "Hysteresis strain energy per unit volume",
+      "Hysteresis (%)"                         = "Hysteresis % (cycle 1 classical"
+    ),
+    metrics = c(
+      "Hysteresis strain energy per unit volume" = "Hysteresis strain energy density (MPa)",
+      "Hysteresis % (cycle 1 classical"          = "Hysteresis (%)"
+    ),
+    figure = c(
+      "Hysteresis strain energy density (MPa)" = "hysteresis_MPa",
+      "Hysteresis (%)"                         = "hysteresis_percent"
+    )
+  ),
+  stress_relax = list(
+    prefix = "Stress-relax", stamp = "080726.2",
+    rename = c(
+      "Rate of change of stress (MPa/s)" = "Rate of change of stress 60s",
+      "Stress relaxation (%)"            = "Stress-relaxation 60s"
+    ),
+    metrics = c(
+      "Rate of change of stress 60s" = "Rate of change of stress (MPa/s)",
+      "Stress-relaxation 60s"        = "Stress relaxation (%)"
+    ),
+    figure = c(
+      "Rate of change of stress (MPa/s)" = "rate_change_stress",
+      "Stress relaxation (%)"            = "stress_relax_percent"
+    )
+  ),
+  failure = list(
+    prefix = "Failure", stamp = "080726.2",
+    rename = c(
+      "Failure stress"          = "failure_stress",
+      "Failure strain"          = "failure_strain",
+      "Max modulus"             = "max_modulus",
+      "Failure force"           = "failure_force",
+      "Failure extension"       = "failure_extension",
+      "Stress at max modulus"   = "stress_max_modulus",
+      "Strain at max modulus"   = "strain_max_modulus"
+    ),
+    metrics = c(
+      failure_stress      = "Failure stress (MPa)",
+      failure_strain      = "Failure strain (%)",
+      max_modulus         = "Maximum modulus (MPa)",
+      failure_force       = "Failure force (N)",
+      failure_extension   = "Failure extension (mm)",
+      stress_max_modulus  = "Stress at maximum modulus (MPa)",
+      strain_max_modulus  = "Strain at maximum modulus (%)"
+    ),
+    figure = c(
+      "Failure stress (MPa)"            = "failure_stress",
+      "Failure strain (%)"              = "failure_strain",
+      "Maximum modulus (MPa)"           = "max_modulus",
+      "Failure force (N)"               = "failure_force",
+      "Failure extension (mm)"          = "failure_extension",
+      "Stress at maximum modulus (MPa)" = "stress_at_maxmod",
+      "Strain at maximum modulus (%)"   = "strain_at_maxmod"
+    )
+  )
+)
+```
+
+## Read and tidy
+
+Each genotype carries two pieces of information (line and zygosity); these are recombined into allele-precise x-axis labels.
+
+```{r}
+#| warning: false
+#| message: false
+
+# First matching pattern wins; unmatched names are left alone.
+rename_cols <- function(nms, map) {
+  map <- c(map, c("Mouse ID" = "mouse_id"))
+  map_chr(nms, \(nm) {
+    hit <- which(str_detect(nm, names(map)))[1]
+    if (is.na(hit)) nm else unname(map[hit])
+  })
+}
+
+add_metadata <- function(df) {
+  df |>
+    mutate(
+      Line = factor(if_else(str_starts(Genotype, "oim"), "oim", "Col1a2-null"),
+                    levels = c("oim", "Col1a2-null")),
+      Zygosity = case_when(
+        str_detect(Genotype, "Wt")  ~ "Wt",
+        str_detect(Genotype, "Het") ~ "Het",
+        str_detect(Genotype, "Hom") ~ "Hom"
+      ),
+      Genotype = factor(
+        paste(Line, Zygosity),
+        levels = c("oim Wt", "oim Het", "oim Hom",
+                   "Col1a2-null Wt", "Col1a2-null Het", "Col1a2-null Hom")
+      ),
+      Allele = factor(case_when(
+        Line == "oim"         & Zygosity == "Wt"  ~ "+/+",
+        Line == "oim"         & Zygosity == "Het" ~ "+/oim",
+        Line == "oim"         & Zygosity == "Hom" ~ "oim/oim",
+        Line == "Col1a2-null" & Zygosity == "Wt"  ~ "+/+",
+        Line == "Col1a2-null" & Zygosity == "Het" ~ "+/−",
+        Line == "Col1a2-null" & Zygosity == "Hom" ~ "−/−"
+      ), levels = c("+/+", "+/oim", "oim/oim", "+/−", "−/−")),
+      # "M J +/+" etc: sex, line (J = oim, N = Col1a2-null), allele.
+      # Note: The sex prefix only orders/separates the groups and is stripped from the final tick labels.
+      AlleleLabel = factor(
+        paste(Sex, if_else(Line == "oim", "J", "N"), Allele),
+        levels = c(
+          "M J +/+", "M J +/oim", "M J oim/oim",
+          "F J +/+", "F J +/oim", "F J oim/oim",
+          "M N +/+", "M N +/−", "M N −/−",
+          "F N +/+", "F N +/−", "F N −/−"
+        )
+      ),
+      Sex = factor(Sex, levels = c("F", "M"), labels = c("Female", "Male")),
+      Timepoint = factor(Age, levels = timepoints,
+                         labels = c("8 weeks", "18 weeks", "52 weeks"))
+    )
+}
+
+read_assay <- function(spec) {
+  set_names(timepoints) |>
+    map(\(tp) {
+      read_csv(file.path(data_dir, glue("{spec$prefix}_{tp}_{spec$stamp}.csv")),
+               locale = locale(encoding = "latin1"),
+               show_col_types = FALSE) |>
+        rename_with(rename_cols, map = spec$rename)
+    }) |>
+    list_rbind() |>
+    add_metadata() |>
+    select(mouse_id, Sex, Line, Genotype, Allele, AlleleLabel, Timepoint,
+           all_of(names(spec$metrics))) |>
+    pivot_longer(all_of(names(spec$metrics)),
+                 names_to = "Metric", values_to = "value") |>
+    filter(!is.na(value)) |>
+    mutate(Metric = unname(spec$metrics[Metric]))
+}
+
+metric_order <- unlist(map(assays, \(s) unname(s$metrics)), use.names = FALSE)
+figure_stems <- do.call(c, unname(map(assays, "figure")))
+
+dat_long <- assays |>
+  map(read_assay) |>
+  list_rbind(names_to = "Assay") |>
+  mutate(Metric = factor(Metric, levels = metric_order))
+
+```
+
+Each mouse has several technical replicates but only ~4 mice per group, and the replicates aren't independent, so summaries use per-mouse means. Raw replicates appear only as a faint background layer. In the statistical analysis mixed models were employed to account for pseudo-replication, treating each mouse as a biological unit.
+
+```{r}
+
+# One point per mouse 
+mouse_means <- dat_long |>
+  summarise(value = mean(value),
+            .by = c(mouse_id, Sex, Line, Genotype, Allele, AlleleLabel,
+                    Timepoint, Assay, Metric))
+
+# Mice per group
+mouse_means |>
+  distinct(Timepoint, Genotype, Sex, mouse_id) |>
+  count(Timepoint, Genotype, Sex) |>
+  pivot_wider(names_from = Sex, values_from = n, values_fill = 0)
+
+# Mean and SD, with whiskers clipped at zero for strictly non-negative metrics
+group_stats <- mouse_means |>
+  summarise(
+    mean = mean(value),
+    sd = sd(value),
+    min_value = min(value),
+    max_value = max(value),
+    .by = c(AlleleLabel, Timepoint, Metric)
+  ) |>
+  mutate(
+    line_lower = if_else(min_value >= 0, pmax(mean - sd, 0), mean - sd),
+    line_upper = if_else(max_value <= 0, pmin(mean + sd, 0), mean + sd)
+  )
+```
+
+## Plotting
+
+Points are coloured per mouse within each group (warm palette for females, cool for males), so replicates can be traced back to their animal.
+
+```{r}
+
+female_cols <- c(
+  "#E69F00",
+  "#D55E00",
+  "#CC79A7",
+  "#C2185B"
+)
+
+male_cols <- c(
+  "#0072B2",  
+  "#56B4E9",  
+  "#3949AB",  
+  "#6A3D9A"   
+)
+
+mouse_cols <- mouse_means |>
+  distinct(mouse_id, Sex, Timepoint, Genotype) |>
+  arrange(Timepoint, Genotype, Sex, mouse_id) |>
+  group_by(Timepoint, Genotype, Sex) |>
+  mutate(mouse_col = if (first(Sex) == "Female") {
+    female_cols[seq_len(n())]
+  } else {
+    male_cols[seq_len(n())]
+  }) |>
+  ungroup()
+
+join_by_mouse <- c("mouse_id", "Sex", "Timepoint", "Genotype")
+mouse_means <- left_join(mouse_means, mouse_cols, by = join_by_mouse)
+dat_long    <- left_join(dat_long,    mouse_cols, by = join_by_mouse)
+
+```
+
+One helper draws a metric across all three timepoints. `style` picks the point layer: `"tech"` adds the faint technical replicates behind the per-mouse means (default); `"beeswarm"` and `"jitter"` show the means only.
+
+```{r}
+
+plot_metric <- function(metric_name, style = c("tech", "beeswarm", "jitter")) {
+
+  style <- match.arg(style)
+  md <- filter(mouse_means, Metric == metric_name)
+  td <- filter(dat_long,    Metric == metric_name)
+  gd <- filter(group_stats, Metric == metric_name)
+
+  p <- ggplot(md, aes(AlleleLabel, value))
+
+  if (style == "tech") {
+    p <- p + geom_quasirandom(data = td, aes(colour = mouse_col),
+                              width = 0.15, size = 1, alpha = 0.35, stroke = 0)
+  }
+
+  p <- p + switch(style,
+    jitter = geom_jitter(aes(colour = mouse_col), width = 0.1, height = 0,
+                         size = 2.5, stroke = 0),
+    geom_beeswarm(aes(colour = mouse_col), size = 2.5, cex = 2.2, stroke = 0)
+  )
+
+  # mean +/- SD: vertical range line, wide bar at the mean, narrow bars at ± SD
+  crossbar <- function(y, width) {
+    geom_crossbar(data = gd, aes(x = AlleleLabel, y = {{ y }},
+                                 ymin = {{ y }}, ymax = {{ y }}),
+                  inherit.aes = FALSE, width = width,
+                  colour = "grey35", linewidth = 0.2)
+  }
+
+  p +
+    geom_segment(data = gd,
+                 aes(x = AlleleLabel, xend = AlleleLabel,
+                     y = line_lower, yend = line_upper),
+                 inherit.aes = FALSE, colour = "grey35", linewidth = 0.2) +
+    crossbar(mean, 0.6) +
+    crossbar(mean + sd, 0.4) +
+    crossbar(mean - sd, 0.4) +
+    facet_grid(. ~ Timepoint, scales = "free_x", space = "free_x") +
+    scale_colour_identity() +
+    scale_x_discrete(drop = TRUE, labels = \(x) gsub("^[MF] ", "", x)) +
+    scale_y_continuous(limits = c(min(0, min(td$value, na.rm = TRUE)), NA),
+                       expand = expansion(mult = c(0, 0.05))) +
+    labs(x = NULL, y = metric_name) +
+    theme_cowplot(font_size = 12) +
+    background_grid(major = "y", minor = "none") +
+    theme(
+      legend.position = "none",
+      axis.text.x     = element_text(angle = 60, hjust = 1, vjust = 1),
+      strip.background = element_blank(),
+      strip.placement  = "outside",
+      strip.text       = element_markdown(size = 12),
+      panel.spacing    = unit(0.3, "lines"),
+      panel.border     = element_rect(colour = "grey70", fill = NA, linewidth = 0.5)
+    )
+}
+```
+
+```{r}
+#| fig-width: 12
+#| fig-height: 4
+
+walk(metric_order, \(m) print(plot_metric(m)))
+
+```
+
+## Save figures
+
+```{r}
+
+dir.create("./figures", showWarnings = FALSE)
+
+iwalk(figure_stems, \(stem, metric) {
+  p <- plot_metric(metric)
+  save_plot(glue("./figures/{stem}.pdf"), p, base_width = 12, base_height = 4)
+  save_plot(glue("./figures/{stem}.png"), p, base_width = 12, base_height = 4,
+            dpi = 300, bg = "white")
+})
+
+```
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

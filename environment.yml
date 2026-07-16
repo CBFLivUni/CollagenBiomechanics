@@ -1,0 +1,37 @@
+# Conda environment for the Python half of the biomechanics pipeline
+#
+# Create:
+#   conda env create -f environment.yml
+#
+# Activate:
+#   conda activate collagen-biomechanics
+#
+# The versions below correspond to the environment used for the deposited
+# analysis. Only direct dependencies are listed; transitive dependencies
+# (BLAS, Qt, system libraries, etc.) are resolved automatically by conda.
+
+name: collagen-biomechanics
+
+channels:
+  - conda-forge
+
+dependencies:
+
+  - python=3.12
+  - pip
+
+  - pip:
+
+      # Core numerical analysis
+      - numpy==2.5.1
+      - pandas==3.0.3
+      - scipy==1.18.0
+
+      # Plotting
+      - matplotlib==3.11.0
+
+      # Excel input/output
+      - openpyxl==3.1.5
+
+      # CSV processing utilities
+      - csvkit==2.2.0
