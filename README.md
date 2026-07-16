@@ -3,7 +3,6 @@
 Analysis code accompanying:
 
 > **Type I collagen homotrimer alters the intrinsic and viscoelastic tensile properties of tendon.**
-Johnson *et al.*
 
 This repository takes the compiled instrument exports and produces per-tendon biomechanical parameters and the figures in the manuscript.
 
