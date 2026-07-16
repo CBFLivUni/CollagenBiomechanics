@@ -80,7 +80,7 @@ The compiled .csv files are too large for GitHub and are archived separately:
 
 The compiled files are wide: one shared `Time_S` column, then three columns per recording (`SetName`, `Cycle`, and the measurement). Column names are truncated to 31 characters by the Excel export, so the suffixes variously clipped. The script handles this and warns when things can't be matched.
 
-`compiled_metadata_with_filenames.csv` carries one row per recording. The join key is `FileName` (e.g. `210330 MRC Sample C3.2Data.csv`). 
+`compiled_metadata_with_filenames.csv` has one row per recording. The join key is `FileName` (e.g. `210330 MRC Sample C3.2Data.csv`). 
 
 
 ## Dependencies
@@ -100,7 +100,7 @@ conda activate collagen-biomechanics
 
 ## Running the analysis
 
-### Quick test run
+### Testing the processing script
 
 Build a small subset first. This should only take a few seconds and confirm the environment works before committing to the full dataset:
 
