@@ -7,8 +7,6 @@ Johnson *et al.*
 
 This repository takes the compiled instrument exports and produces per-tendon biomechanical parameters and the figures in the manuscript.
 
----
-
 ## Contents
 
 | File | Summary |
@@ -20,7 +18,6 @@ This repository takes the compiled instrument exports and produces per-tendon bi
 | `supporting_scripts/make_test_data.sh` | Script used to cut dataset down to a few samples for testing purposes (bash, needs `csvkit`). |
 | `environment.yml` | Python environment. |
 
----
 
 ## Project structure
 
@@ -60,7 +57,6 @@ CollagenBiomechanics/
 ├── LICENSE
 └── README.md
 ```
----
 
 ## Getting the data
 
@@ -86,7 +82,6 @@ The compiled files are wide: one shared `Time_S` column, then three columns per 
 
 `compiled_metadata_with_filenames.csv` carries one row per recording. The join key is `FileName` (e.g. `210330 MRC Sample C3.2Data.csv`). 
 
----
 
 ## Dependencies
 
@@ -102,7 +97,6 @@ conda activate collagen-biomechanics
 <!-- TODO: record the R environment. 
        install.packages("renv"); renv::init(); renv::snapshot() -->
 
----
 
 ## Running the analysis
 
