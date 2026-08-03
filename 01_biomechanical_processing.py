@@ -265,24 +265,6 @@ def apply_savgol_safe(y, window: int, poly: int) -> np.ndarray:
     p = min(poly, w - 1)
     return savgol_filter(y, window_length=w, polyorder=p)
 
-
-def savgol_deriv_safe(y, window: int, poly: int, delta: float) -> np.ndarray:
-    """First derivative via Savitzky-Golay, with the same short-segment safety as apply_savgol_safe."""
-    y = np.asarray(y, dtype=float)
-    n = len(y)
-    if n < 5 or not np.isfinite(delta) or delta == 0:
-        return np.full(n, np.nan)
-    w = min(window, n)
-    if w % 2 == 0:
-        w -= 1
-    if w < 5:
-        return np.full(n, np.nan)
-    p = min(poly, w - 1)
-    if p < 1:
-        return np.full(n, np.nan)
-    return savgol_filter(y, window_length=w, polyorder=p, deriv=1, delta=delta)
-
-
 # ---------------------------------------------------------------------
 # QC filters
 # ---------------------------------------------------------------------

@@ -38,11 +38,14 @@ def test_modulus_of_perfectly_linear_ramp():
     disp = np.concatenate([disp, disp[-1] + np.linspace(0, 0.01, 50)])
 
     fail_df = pd.DataFrame({"Force_N": force, "Displacement_mm": disp})
-    mod, strain_at, stress_at, gidx = biomech.compute_sliding_window_modulus(
+    mod = biomech.compute_sliding_window_modulus(
         fail_df, CSA_true=CSA, sample_length=length
     )
-    assert gidx is not None
-    assert mod == pytest.approx(E, rel=1e-3)
+    assert mod["global_idx"] is not None
+    assert mod["modulus"] == pytest.approx(E, rel=1e-3)
+    # a perfectly linear window should fit essentially exactly
+    assert mod["r2"] == pytest.approx(1.0, abs=1e-6)
+    assert mod["n_points"] >= biomech.MODULUS_MIN_POINTS_IN_WINDOW
 
 
 def test_hysteresis_zero_for_identical_load_unload():
@@ -277,9 +280,10 @@ def test_zero_csa_gives_nan_modulus():
         "Force_N": np.linspace(0, 1, 50),
         "Displacement_mm": np.linspace(0, 0.1, 50),
     })
-    mod, *_ , gidx = biomech.compute_sliding_window_modulus(
+    mod = biomech.compute_sliding_window_modulus(
         fail_df, CSA_true=0.0, sample_length=5.0)
-    assert np.isnan(mod) and gidx is None
+    assert np.isnan(mod["modulus"]) and mod["global_idx"] is None
+    assert mod["n_points"] == 0
 
 
 def test_savgol_safe_passes_through_short_segment():
