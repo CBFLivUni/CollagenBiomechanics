@@ -5,7 +5,7 @@ Automated tests for `01_biomechanical_processing.py`.
 The tests have two layers:
 
 - **Unit tests** check individual functions against inputs with a known answer.
-- **A regression test** runs whole pipeline on a small committed dataset and compares the output against a stored reference.
+- **The regression test** runs whole pipeline on a small committed dataset and compares the output against a stored reference. 
 
 ## Running
 From the repository root, in the analysis environment:
@@ -38,8 +38,7 @@ The same command runs in continuous integration (`.github/workflows/tests.yml`).
 ## The regression test and the reference output
 
 `test_regression.py` runs the pipeline on `data/` and compares the resulting summary to `expected/results_summary.csv` within a numerical tolerance (plot-path columns are ignored; NaN matches NaN). A change to any reported value will fail the test.
-
-Used to assess impact of changes to analysis approach/script...
+Useful to to assess impact of changes to analysis approach/script and make sure additional modifications don't change the data/output in an unexpected or unintended way.
 
 ```bash
 python 01_biomechanical_processing.py \
