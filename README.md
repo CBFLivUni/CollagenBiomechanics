@@ -3,11 +3,8 @@
 Analysis code accompanying:
 
 > **Type I collagen homotrimer alters the intrinsic and viscoelastic tensile properties of tendon.**
-Johnson *et al.*
 
 This repository takes the compiled instrument exports and produces per-tendon biomechanical parameters and the figures in the manuscript.
-
----
 
 ## Contents
 
@@ -20,7 +17,6 @@ This repository takes the compiled instrument exports and produces per-tendon bi
 | `supporting_scripts/make_test_data.sh` | Script used to cut dataset down to a few samples for testing purposes (bash, needs `csvkit`). |
 | `environment.yml` | Python environment. |
 
----
 
 ## Project structure
 
@@ -60,7 +56,6 @@ CollagenBiomechanics/
 ├── LICENSE
 └── README.md
 ```
----
 
 ## Getting the data
 
@@ -84,9 +79,8 @@ The compiled .csv files are too large for GitHub and are archived separately:
 
 The compiled files are wide: one shared `Time_S` column, then three columns per recording (`SetName`, `Cycle`, and the measurement). Column names are truncated to 31 characters by the Excel export, so the suffixes variously clipped. The script handles this and warns when things can't be matched.
 
-`compiled_metadata_with_filenames.csv` carries one row per recording. The join key is `FileName` (e.g. `210330 MRC Sample C3.2Data.csv`). 
+`compiled_metadata_with_filenames.csv` has one row per recording. The join key is `FileName` (e.g. `210330 MRC Sample C3.2Data.csv`). 
 
----
 
 ## Dependencies
 
@@ -102,11 +96,10 @@ conda activate collagen-biomechanics
 <!-- TODO: record the R environment. 
        install.packages("renv"); renv::init(); renv::snapshot() -->
 
----
 
 ## Running the analysis
 
-### Quick test run
+### Testing the processing script
 
 Build a small subset first. This should only take a few seconds and confirm the environment works before committing to the full dataset:
 
