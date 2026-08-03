@@ -1,13 +1,13 @@
 """
 Unit tests for 01_biomechanical_processing.py
 
-Grouped by intent:
-  1. Analytic ground-truth   -- synthetic signals with a known answer
-  2. Parsing / bookkeeping    -- the string munging where silent corruption hides
-  3. QC metrics               -- do the filters behave as claimed
-  4. Guards / edge cases      -- degenerate input returns NaN/None, never raises
+Groups:
+  1. Ground-truth checks   - synthetic inputs with an analytically known result
+  2. Column and metadata   - suffix matching and metadata normalisation
+  3. QC metrics            - SNR, residual and range filters
+  4. Guards                - degenerate input returns NaN/None rather than raising
 
-Run:  pytest -v
+Run: pytest -v
 """
 import numpy as np
 import pandas as pd
@@ -16,24 +16,20 @@ import pytest
 import biomech  # provided by conftest.py
 
 
-# =====================================================================
-# 1. ANALYTIC GROUND TRUTH
-#    Build inputs where the correct output can be worked out by hand,
-#    then assert the function reproduces it within tolerance.
-# =====================================================================
+# Ground-truth checks 
 
 def test_modulus_of_perfectly_linear_ramp():
-    """A linear stress-strain curve of known slope E must yield max_mod == E."""
+    """Linear stress-strain curve of slope E; reported modulus should equal E."""
     E = 500.0            # target modulus (MPa)
     CSA = 0.02           # mm^2
     length = 5.0         # mm
     n = 400
 
-    disp = np.linspace(0, 0.1, n)                 # mm  -> strain 0..0.02
+    disp = np.linspace(0, 0.1, n)                 # mm -> strain 0..0.02
     strain = disp / length
-    stress = E * strain                           # exactly linear
+    stress = E * strain
     force = stress * CSA
-    # add a tiny post-peak drop so there is a defined pre-peak region
+    # small post-peak drop so a pre-peak region is defined
     force = np.concatenate([force, force[::-1][:50]])
     disp = np.concatenate([disp, disp[-1] + np.linspace(0, 0.01, 50)])
 
@@ -43,19 +39,17 @@ def test_modulus_of_perfectly_linear_ramp():
     )
     assert mod["global_idx"] is not None
     assert mod["modulus"] == pytest.approx(E, rel=1e-3)
-    # a perfectly linear window should fit essentially exactly
     assert mod["r2"] == pytest.approx(1.0, abs=1e-6)
     assert mod["n_points"] >= biomech.MODULUS_MIN_POINTS_IN_WINDOW
 
 
 def test_hysteresis_zero_for_identical_load_unload():
-    """If unloading retraces the loading path, dissipated energy is ~0."""
-    # analyze_preconditioning expects a df with the instrument columns.
+    """Unloading that retraces the loading path encloses no area."""
     n = 300
     stretch_disp = np.linspace(0, 0.1, n)
-    force = 10.0 * stretch_disp          # linear elastic
+    force = 10.0 * stretch_disp
     recover_disp = stretch_disp[::-1]
-    recover_force = 10.0 * recover_disp  # identical path back
+    recover_force = 10.0 * recover_disp
 
     df = pd.DataFrame({
         "SetName": ["5x pre-conditioning"] * (2 * n),
@@ -67,17 +61,16 @@ def test_hysteresis_zero_for_identical_load_unload():
     })
     res = biomech.analyze_preconditioning(df, CSA_true=0.02)
     assert res["_ok"]
-    # a closed identical loop encloses no area
     assert abs(res["hyst_pct"]) < 1.0   # percent
 
 
 def test_hysteresis_positive_for_lossy_loop():
-    """Unloading below the loading curve must give positive dissipation."""
+    """Unloading below the loading curve gives positive dissipation."""
     n = 300
     stretch_disp = np.linspace(0, 0.1, n)
     load = 10.0 * stretch_disp
     recover_disp = stretch_disp[::-1]
-    unload = 6.0 * recover_disp          # sits below the loading curve
+    unload = 6.0 * recover_disp          # below the loading curve
     df = pd.DataFrame({
         "SetName": ["5x pre-conditioning"] * (2 * n),
         "Cycle": ["1-Stretch"] * n + ["1-Recover"] * n,
@@ -93,20 +86,16 @@ def test_hysteresis_positive_for_lossy_loop():
 
 
 def test_stress_relaxation_exponential_decay():
-    """
-    Synthetic hold: stress decays from s_peak to a known s60.
-    stress_relax_60 (%) should equal (s_peak - s60)/s_peak * 100.
-    """
+    """Stress decaying from s_peak to a known s60 gives (s_peak-s60)/s_peak * 100."""
     CSA = 0.02
     fs = 100                             # samples/s
     t = np.arange(0, 65, 1 / fs)         # 65 s at 100 Hz
     s_peak_stress = 10.0                 # MPa
-    s60_stress = 6.0                     # MPa target at t=60
+    s60_stress = 6.0                     # MPa at t=60
     tau = 60.0 / np.log(s_peak_stress / s60_stress)
     stress = s_peak_stress * np.exp(-t / tau)
-    force = stress * CSA                 # relax_block Force column
+    force = stress * CSA
 
-    # analyze_hold wants a Preload cycle (baseline) + a Hold cycle
     preload_n = 50
     df = pd.DataFrame({
         "SetName": ["Stress-relax"] * (preload_n + len(t)),
@@ -122,7 +111,7 @@ def test_stress_relaxation_exponential_decay():
 
 
 def test_stress_scales_linearly_with_force():
-    """Doubling the whole force trace must double failure stress (property test)."""
+    """Doubling the force trace doubles the failure stress."""
     n = 200
     disp = np.linspace(0, 0.2, n)
     base = pd.DataFrame({
@@ -137,18 +126,14 @@ def test_stress_scales_linearly_with_force():
     assert r2["failure_stress"] == pytest.approx(2 * r1["failure_stress"], rel=1e-6)
 
 
-# =====================================================================
-# 2. PARSING / BOOKKEEPING
-#    Truncated-suffix matching and metadata normalisation are where a
-#    silent wrong-sample join would come from.
-# =====================================================================
+# Column and metadata 
 
 @pytest.mark.parametrize("remainder,expected,ok", [
     ("SetName", "SetName", True),
     ("SetNam", "SetName", True),     # Excel 31-char truncation
     ("SetN",   "SetName", True),
     ("Force_",  "Force_N", True),
-    ("",       "SetName", False),    # empty never matches
+    ("",       "SetName", False),
     ("Xyz",    "SetName", False),
 ])
 def test_suffix_matches(remainder, expected, ok):
@@ -156,7 +141,7 @@ def test_suffix_matches(remainder, expected, ok):
 
 
 def test_find_col_flags_ambiguous_truncation():
-    """'S' could be SetName or Size_mm -> must refuse to guess (return None)."""
+    """'S' matches both SetName and Size_mm, so find_col returns None."""
     df = pd.DataFrame(columns=["Time_S", "smpl_S"])
     assert biomech.find_col(df, "smpl", "SetName") is None
 
@@ -170,7 +155,7 @@ def test_find_col_resolves_clean_truncation():
 @pytest.mark.parametrize("raw,out", [
     (210330, "210330"),
     ("210330", "210330"),
-    (330, "000330"),          # zero-pad to 6 -- guards the int-inference join bug
+    (330, "000330"),          # zero-padded to six characters
     (np.int64(210330), "210330"),
 ])
 def test_normalise_date_id(raw, out):
@@ -185,7 +170,7 @@ def test_normalise_replicate(raw, out):
 
 
 def test_lookup_metadata_prefers_exact_filename():
-    """C3 and C3.2 must NOT collide when FileName is available."""
+    """FileName match distinguishes C3 from C3.2, which share the name triple."""
     meta = pd.DataFrame({
         "FileName": ["210330 MRC Sample C3Data.csv", "210330 MRC Sample C3.2Data.csv"],
         "Date_ID": ["210330", "210330"],
@@ -198,28 +183,24 @@ def test_lookup_metadata_prefers_exact_filename():
     assert rows.iloc[0]["FileName"] == "210330 MRC Sample C3.2Data.csv"
 
 
-# =====================================================================
-# 3. QC METRICS
-# =====================================================================
+# QC metrics 
 
 def test_snr_high_for_clean_ramp():
-    """Clean ramp above a quiet baseline -> high SNR."""
+    """Clean ramp above a unnoisy baseline gives high SNR."""
     y = np.linspace(0, 10, 500)
     assert biomech.compute_snr(y) > biomech.SNR_THRESHOLD
 
 
 def test_snr_low_for_pure_noise():
     rng = np.random.default_rng(0)
-    y = rng.normal(0, 1, 500)            # no real signal
+    y = rng.normal(0, 1, 500)
     snr = biomech.compute_snr(y)
     assert (not np.isfinite(snr)) or snr < biomech.SNR_THRESHOLD
 
 
 def test_snr_uses_preload_cycle_as_baseline():
     """
-    Noise must come from the 1-Preload phase, not the whole segment. Build a
-    quiet preload of known SD plus a clean ramp to a known peak, and check
-    SNR ~ peak / preload_noise (i.e. the loading gradient is NOT counted as noise).
+    Noise is taken from the 1-Preload phase, not the whole segment. For a unnoisy preload plus a clean ramp, SNR is approximately peak / preload SD, so the loading gradient does not contribute to the noise estimate.
     """
     rng = np.random.default_rng(1)
     n_pre, n_load = 200, 400
@@ -233,47 +214,40 @@ def test_snr_uses_preload_cycle_as_baseline():
 
 
 def test_snr_noise_floor_prevents_blowup():
-    """A perfectly flat (quantisation-limited) preload must stay finite, not inf."""
+    """A steady preload barely varies, so its noise estimate is ~0; the floor keeps SNR finite instead of dividing by near-zero."""
     force = np.concatenate([np.full(200, 0.10), np.linspace(0.10, 0.40, 400)])
     cycle = ["1-Preload"] * 200 + ["1-Stretch"] * 400
     snr = biomech.compute_snr(force, cycle)
-    assert np.isfinite(snr) and snr < 1e4           # floored at q/sqrt(12)
+    assert np.isfinite(snr) and snr < 1e4           # bounded by the noise floor
 
 
 def test_snr_nan_for_flat_signal():
-    """No rise above baseline -> no signal -> NaN (cannot pass QC)."""
+    """No rise above baseline gives no signal, so SNR is NaN and cannot pass."""
     assert not np.isfinite(biomech.compute_snr(np.full(500, 2.0)))
 
 
 def test_snr_gates_failure_but_not_gentle_segments():
     """
-    The C2 case: a well-shaped segment (passes residual + range) whose peak
-    does not clear a high preload, so its peak-over-preload SNR is low/undefined.
-    It must FAIL when SNR gates (failure segment) but PASS when SNR does not gate
-    (preconditioning / hold), so a good specimen is not excluded on a metric that
-    is only well-posed for the failure curve.
+    A segment that passes the residual and range filters but has low SNR (its peak does not clear a high preload) fails only where SNR gates, i.e. the failure segment. 
+    Preconditioning and hold do not gate on SNR.
     """
     rng = np.random.default_rng(3)
     n_pre, n_load = 200, 600
-    preload = np.full(n_pre, 0.20) + rng.normal(0, 3e-4, n_pre)   # high, quiet preload
-    load = 0.20 - 0.05 * np.sin(np.linspace(0, np.pi, n_load))    # smooth dip, never clears preload
+    preload = np.full(n_pre, 0.20) + rng.normal(0, 3e-4, n_pre)
+    load = 0.20 - 0.05 * np.sin(np.linspace(0, np.pi, n_load))    # never clears preload
     force = np.concatenate([preload, load])
     cycle = ["1-Preload"] * n_pre + ["1-Stretch"] * n_load
 
     gated = biomech.segment_qc(force, cycle, "failure", gate_snr=True)
     ungated = biomech.segment_qc(force, cycle, "pre-conditioning", gate_snr=False)
 
-    # precondition: it's a clean, ranged segment that simply has poor SNR
     assert gated["snr_pass"] is False
     assert gated["resid_pass"] is True and gated["range_pass"] is True
-    # the gate is the only thing that differs
     assert gated["pass"] is False
     assert ungated["pass"] is True
 
 
-# =====================================================================
-# 4. GUARDS / EDGE CASES  -- must degrade gracefully, never raise
-# =====================================================================
+# Guards 
 
 def test_zero_csa_gives_nan_modulus():
     fail_df = pd.DataFrame({
@@ -287,7 +261,7 @@ def test_zero_csa_gives_nan_modulus():
 
 
 def test_savgol_safe_passes_through_short_segment():
-    y = np.array([1.0, 2.0, 3.0])        # shorter than min window
+    y = np.array([1.0, 2.0, 3.0])        # shorter than the minimum window
     out = biomech.apply_savgol_safe(y, 101, 3)
     np.testing.assert_array_equal(out, y)
 

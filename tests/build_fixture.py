@@ -1,14 +1,14 @@
 """
-Build a small, self-contained regression fixture under tests/data/ by
-subsetting the compiled CSVs to a handful of samples. Pure-pandas version of
-make_test_data.sh (no csvkit dependency), so it runs anywhere pytest does.
+Build the regression fixture under tests/data/ by subsetting the compiled CSVs
+to a few samples. A pandas equivalent of make_test_data.sh, with no csvkit
+dependency.
 
-Chosen samples deliberately span the interesting cases:
-  A1     -- everything passes
-  B10    -- hold fails QC (residual)
-  C3     -- collides with C3.2 on the (Date,Sample,Replicate) triple
-  C3.2   -- the collision partner; exercises exact-FileName metadata matching
-  C6     -- lowest hold SNR in the set
+The selected samples cover a range of cases:
+  A1     - passes all QC
+  B10    - hold fails the residual filter
+  C3     - shares the (Date, Sample, Replicate) triple with C3.2
+  C3.2   - collision partner for the FileName-based metadata join
+  C6     - lowest hold SNR in the set
 
 Run from the repo root:  python tests/build_fixture.py
 """

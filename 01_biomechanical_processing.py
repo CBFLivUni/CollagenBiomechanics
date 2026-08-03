@@ -61,7 +61,7 @@ RANGE_THRESHOLD = 0.01
 SNR_SAVGOL_WINDOW = 101       # smoothing window for the peak (signal) estimate
 SNR_SAVGOL_POLY = 3
 SNR_BASELINE_MAX_POINTS = 50  # preload samples nearest loading, used for noise SD
-FORCE_RESOLUTION_N = 0.005    # load-cell quantisation step (N); floors the noise estimate
+FORCE_RESOLUTION_N = 0.005    # small fixed force resolution; floors the noise so a near-constant preload doesn't give SD = 0
 
 # Stress relaxation
 HOLD_DURATION_S = 60.0        # hold duration
