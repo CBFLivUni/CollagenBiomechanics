@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
-01_biomechanical_processing.py
-
 Tendon tensile-test processing for the Col1a2 null/oim collagen homotrimer study.
-Reads the compiled wide-format Force/Displacement/Size .csv files plus the sample
-metadata, derives biomechanical parameters for each tendon (preconditioning
-hysteresis, stress relaxation over a 60s hold, and pull-to-failure properties),
-and then writes a per-sample summary as .csv and .xlsx with force-time and
-force-extension plots embedded.
 
-Usage
------
+Reads the compiled wide-format Force/Displacement/Size CSVs and the sample
+metadata, derives per-tendon biomechanical parameters (preconditioning,
+hysteresis, stress relaxation over a 60 s hold, pull-to-failure), and writes a
+per-sample summary as CSV and XLSX with force-time and force-extension plots
+embedded.
+
+Usage:
     python 01_biomechanical_processing.py
     python 01_biomechanical_processing.py --raw-dir test_data --results-dir results/test
 """
@@ -37,19 +35,18 @@ import openpyxl
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import get_column_letter
 
-# NumPy 2.0 renamed trapz -> trapezoid; trapz is deprecated and will be removed.
+# np.trapezoid (NumPy >= 2.0) with a fallback to the older np.trapz.
 _trapezoid = getattr(np, "trapezoid", None) or np.trapz
 
 log = logging.getLogger("biomech")
 
 # ---------------------------------------------------------------------
 # Config
-#
 # These constants are matched to those outlined in the methods section of the paper.
 # They can be adjusted for sensitivity analysis or similar.
 # ---------------------------------------------------------------------
 
-# Smoothing 
+# Smoothing
 PRECON_SAVGOL_WINDOW = 101
 PRECON_SAVGOL_POLY = 3
 HOLD_SAVGOL_WINDOW = 101
@@ -60,29 +57,22 @@ SNR_THRESHOLD = 3
 RESIDUAL_THRESHOLD = 0.08
 RANGE_THRESHOLD = 0.01
 
-# SNR settings (peak-over-baseline-noise definition).
-# Noise is estimated on the quiescent 1-Preload phase, mirroring the signal-free
-# baseline used by the SNR filter in 02_failure_profile_clustering.qmd, so that
-# the same SNR >= SNR_THRESHOLD criterion means the same thing in both scripts.
+# SNR settings. Noise is estimated on the quiescent 1-Preload phase.
 SNR_SAVGOL_WINDOW = 101       # smoothing window for the peak (signal) estimate
 SNR_SAVGOL_POLY = 3
-SNR_BASELINE_MAX_POINTS = 50  # samples of preload (nearest loading) used for noise SD
-# Load-cell force quantisation step (N). A perfectly flat preload has an SD at
-# the quantisation floor, not zero; the noise estimate is floored at the SD of a
-# uniform quantisation error over one step (q/sqrt(12)) so that a clean, heavily
-# quantised baseline yields a large-but-finite SNR rather than dividing by ~0.
-FORCE_RESOLUTION_N = 0.005
+SNR_BASELINE_MAX_POINTS = 50  # preload samples nearest loading, used for noise SD
+FORCE_RESOLUTION_N = 0.005    # load-cell quantisation step (N); floors the noise estimate
 
 # Stress relaxation
 HOLD_DURATION_S = 60.0        # hold duration
-PEAK_WINDOW_S = 2.0           # window from start of hold within which peak stress is taken
-S60_HALF_WINDOW_S = 1.0       # window over which S60 is averaged (2s window centred on 60s)
+PEAK_WINDOW_S = 2.0           # window from hold start for peak stress
+S60_HALF_WINDOW_S = 1.0       # half-width of the window S60 is averaged over (2s window centred on 60s)
 
-# Maximum modulus 
-MODULUS_STRAIN_WINDOW = 0.01  # total width of the strain window
-MODULUS_PEAK_LOW_FRAC = 0.05  # lower bound as fraction of peak stress
-MODULUS_PEAK_HIGH_FRAC = 0.60  # upper bound as fraction of peak stress
-MODULUS_MIN_POINTS_IN_WINDOW = 3  
+# Maximum modulus
+MODULUS_STRAIN_WINDOW = 0.01  # strain window width
+MODULUS_PEAK_LOW_FRAC = 0.05  # lower bound, fraction of peak stress
+MODULUS_PEAK_HIGH_FRAC = 0.60  # upper bound, fraction of peak stress
+MODULUS_MIN_POINTS_IN_WINDOW = 3
 
 # Instrument label strings used to segment each test.
 SETNAME_PRECONDITIONING = "5x pre-conditioning"
@@ -173,7 +163,6 @@ def save_force_extension_plot(df_fail: pd.DataFrame, outfile_png: str,
 # Metadata
 # ---------------------------------------------------------------------
 
-# Helper functions to normalise columns in the metadata
 def _normalise_date_id(v) -> str:
     """Return Date_ID as a six-character, zero-padded string."""
     if pd.isna(v):
@@ -197,11 +186,7 @@ def _normalise_replicate(v) -> str:
 
 def load_metadata(meta_path: str | Path) -> pd.DataFrame:
     """
-    Load the sample metadata CSV.
-
-    'Age' is intentionally NOT coerced to numeric: it is categorical
-    ('8wks', '18wks', '52wks').
-
+    Load the sample metadata CSV. 'Age' is left categorical ('8wks', '18wks', '52wks').
     """
     meta_path = Path(meta_path)
     if not meta_path.exists():
@@ -250,7 +235,7 @@ def load_metadata(meta_path: str | Path) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Metadata is missing required column(s): {missing}")
 
-    # Maintain date padding in date IDs otherwise join will fail (as pandas will infer as integer)
+    # Keep Date_ID zero-padded as a string, or the metadata join will fail.
     df["Date_ID"] = df["Date_ID"].apply(_normalise_date_id)
     df["Sample_ID"] = df["Sample_ID"].astype(str).str.strip()
     df["Replicate"] = df["Replicate"].apply(_normalise_replicate)
@@ -282,11 +267,7 @@ def apply_savgol_safe(y, window: int, poly: int) -> np.ndarray:
 
 
 def savgol_deriv_safe(y, window: int, poly: int, delta: float) -> np.ndarray:
-    """
-    First derivative via Savitzky-Golay, with the same window safety as
-    apply_savgol_safe.
-
-    """
+    """First derivative via Savitzky-Golay, with the same short-segment safety as apply_savgol_safe."""
     y = np.asarray(y, dtype=float)
     n = len(y)
     if n < 5 or not np.isfinite(delta) or delta == 0:
@@ -314,21 +295,10 @@ def compute_snr(force, cycle=None, window: int = SNR_SAVGOL_WINDOW,
 
         signal = peak of the smoothed force, above the preload baseline level
         noise  = SD of the raw force over the quiescent 1-Preload phase
-                 (a signal-free region the instrument records before loading)
 
-    Estimating noise on the preload baseline — rather than from std(diff) over
-    the whole segment — keeps the real loading gradient and the failure event
-    out of the noise estimate. This mirrors the SNR filter in
-    02_failure_profile_clustering.qmd, which measures noise on the signal-free
-    pre-onset baseline of the failure curve; here the instrument's labelled
-    1-Preload phase provides the equivalent signal-free region for every segment
-    (preconditioning, hold and failure), so one SNR >= SNR_THRESHOLD criterion
-    applies consistently across both scripts.
-
-    `cycle` is the per-sample cycle label for the segment. When it is absent,
-    the leading `baseline_max` samples are used as the baseline instead. Returns
-    NaN when no usable baseline or positive signal can be found, in which case
-    the segment cannot pass the SNR filter.
+    `cycle` is the segment's cycle label; when absent, the leading `baseline_max`
+    samples are used as the baseline. Returns NaN when no usable baseline or
+    positive signal is found (the segment then cannot pass the SNR filter).
     """
     force = np.asarray(force, dtype=float)
 
@@ -341,7 +311,7 @@ def compute_snr(force, cycle=None, window: int = SNR_SAVGOL_WINDOW,
             b = force[pre_mask]
             b = b[np.isfinite(b)]
             if len(b) >= 2:
-                # samples nearest load application best represent noise at onset
+                # samples nearest load onset best represent the noise
                 baseline_vals = b[-baseline_max:] if len(b) > baseline_max else b
     if baseline_vals is None:
         ff = force[np.isfinite(force)]
@@ -351,8 +321,7 @@ def compute_snr(force, cycle=None, window: int = SNR_SAVGOL_WINDOW,
         return np.nan
 
     noise = float(np.std(baseline_vals))
-    # Floor at the quantisation noise so a flat, quantisation-limited preload
-    # does not divide the signal by a spuriously tiny SD.
+    # Floor at the quantisation noise so a flat preload doesn't give a near-zero SD.
     noise = max(noise, FORCE_RESOLUTION_N / np.sqrt(12.0))
     if not np.isfinite(noise) or noise <= 0:
         return np.nan
@@ -393,16 +362,12 @@ def compute_signal_range(y) -> float:
 
 def segment_qc(y, cycle, label: str, gate_snr: bool = True) -> dict:
     """
-    Compute the three QC metrics and their pass flags for one segment.
+    Compute the three QC metrics (SNR, residual ratio, range) and their pass flags for one segment.
 
-    `gate_snr` controls whether SNR contributes to the overall pass/fail. The
-    peak-over-preload SNR is only well-posed for the failure curve, whose
-    1-Preload phase is a genuine quiescent baseline. For the gentle
-    preconditioning (and, less severely, the hold) the preload is a held tension
-    rather than a signal-free zero, so a low SNR there reflects the baseline, not
-    a bad specimen. This mirrors 02_failure_profile_clustering.qmd, which applies
-    the SNR filter to the failure curve only. SNR is still computed and reported
-    for every segment as a diagnostic; it just does not gate the gentle ones.
+    `gate_snr` controls whether SNR contributes to the overall pass/fail. It is
+    only meaningful for the failure curve, where 1-Preload phase is a true baseline.
+    SNR is still computed and reported for every segment as a diagnostic, but does not gate preconditioning or hold.
+
     """
     snr = compute_snr(y, cycle)
     resid = compute_residual_ratio(y)
@@ -435,24 +400,30 @@ def empty_qc() -> dict:
 # Sliding-window modulus
 # ---------------------------------------------------------------------
 
+# Returned when no valid modulus window is found.
+_NULL_MODULUS = {
+    "modulus": np.nan, "strain": np.nan, "stress": np.nan, "global_idx": None,
+    "intercept": np.nan, "r2": np.nan, "n_points": 0,
+}
+
+
 def compute_sliding_window_modulus(fail_df: pd.DataFrame, CSA_true: float,
                                    sample_length: float,
-                                   window_size_strain: float = MODULUS_STRAIN_WINDOW):
+                                   window_size_strain: float = MODULUS_STRAIN_WINDOW) -> dict:
     """
     Maximum tangent modulus from a strain window slid along the pre-peak
-    stress-strain curve, restricted to 5-60% of peak stress
+    stress-strain curve, restricted to 5-60% of peak stress.
 
-    Returns
-    -------
-    (modulus, strain_at_modulus, stress_at_modulus, global_index)
+    Returns a dict with the modulus (slope), strain/stress at the modulus point,
+    its global index, and goodness-of-fit for the winning window (intercept, R2,number of points).
     """
     force = fail_df["Force_N"].to_numpy(float)
     disp = fail_df["Displacement_mm"].to_numpy(float)
 
     if not np.isfinite(CSA_true) or CSA_true == 0:
-        return np.nan, np.nan, np.nan, None
+        return dict(_NULL_MODULUS)
     if not np.isfinite(sample_length) or sample_length == 0:
-        return np.nan, np.nan, np.nan, None
+        return dict(_NULL_MODULUS)
 
     load_corr = force - force[0]
     disp_corr = disp - disp[0]
@@ -466,15 +437,15 @@ def compute_sliding_window_modulus(fail_df: pd.DataFrame, CSA_true: float,
     idx_all = fail_df.index.to_numpy()[mask]
 
     if len(strain) < 6:
-        return np.nan, np.nan, np.nan, None
+        return dict(_NULL_MODULUS)
 
     # Pre-peak region only
     peak_idx = int(np.nanargmax(stress))
     if peak_idx <= 2:
-        return np.nan, np.nan, np.nan, None
+        return dict(_NULL_MODULUS)
     strain, stress, idx_all = strain[:peak_idx], stress[:peak_idx], idx_all[:peak_idx]
     if len(strain) < 6:
-        return np.nan, np.nan, np.nan, None
+        return dict(_NULL_MODULUS)
 
     # Peak-stress window filter (5-60% of peak stress)
     peak_stress = float(np.nanmax(stress))
@@ -482,7 +453,7 @@ def compute_sliding_window_modulus(fail_df: pd.DataFrame, CSA_true: float,
     high_s = MODULUS_PEAK_HIGH_FRAC * peak_stress
     mask_zone = (stress >= low_s) & (stress <= high_s)
     if np.sum(mask_zone) < 6:
-        return np.nan, np.nan, np.nan, None
+        return dict(_NULL_MODULUS)
     strain, stress, idx_all = strain[mask_zone], stress[mask_zone], idx_all[mask_zone]
 
     # Sliding linear fit
@@ -504,11 +475,31 @@ def compute_sliding_window_modulus(fail_df: pd.DataFrame, CSA_true: float,
             continue
 
     if not np.isfinite(slopes).any():
-        return np.nan, np.nan, np.nan, None
+        return dict(_NULL_MODULUS)
 
     idx_local = int(np.nanargmax(slopes))
     global_idx = int(idx_all[idx_local])
-    return float(slopes[idx_local]), float(strain[idx_local]), float(stress[idx_local]), global_idx
+
+    # Refit the winning window to report its goodness-of-fit.
+    x0 = strain[idx_local]
+    mask_win = (strain >= x0 - half_win) & (strain <= x0 + half_win)
+    xs = strain[mask_win]
+    ys = stress[mask_win]
+    slope, intercept = np.polyfit(xs, ys, 1)
+    y_hat = slope * xs + intercept
+    ss_res = float(np.sum((ys - y_hat) ** 2))
+    ss_tot = float(np.sum((ys - np.mean(ys)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
+    return {
+        "modulus": float(slope),
+        "strain": float(strain[idx_local]),
+        "stress": float(stress[idx_local]),
+        "global_idx": global_idx,
+        "intercept": float(intercept),
+        "r2": float(r2),
+        "n_points": int(len(xs)),
+    }
 
 
 # ---------------------------------------------------------------------
@@ -528,7 +519,7 @@ def analyze_preconditioning(df: pd.DataFrame, CSA_true: float) -> dict:
     if not np.isfinite(sample_length) or sample_length == 0:
         return {"_ok": False, "_reason": "preconditioning Size_mm is zero/NaN"}
 
-    # Baseline: minimum force across the whole preconditioning block (unchanged).
+    # Baseline: minimum force across the whole preconditioning block.
     min_force = float(pre["Force_N"].min())
     pre["Load_corr"] = pre["Force_N"] - min_force
     pre["Disp_corr"] = pre["Displacement_mm"] - pre["Displacement_mm"].iloc[0]
@@ -554,8 +545,7 @@ def analyze_preconditioning(df: pd.DataFrame, CSA_true: float) -> dict:
         xs_unload = xs_unload - strain_origin
 
         A_load = float(_trapezoid(ys_load, xs_load))
-        # Recovery runs in the direction of decreasing strain, so trapezoid
-        # returns a negative area; abs() recovers the magnitude.
+        # Recovery runs in decreasing strain, so its area is negative; take abs().
         A_unload = float(_trapezoid(ys_unload, xs_unload))
 
         hyst_energy = A_load - abs(A_unload)
@@ -572,10 +562,7 @@ def analyze_preconditioning(df: pd.DataFrame, CSA_true: float) -> dict:
 
 
 def analyze_hold(df: pd.DataFrame, CSA_true: float) -> dict:
-    """
-    Stress relaxation over the 60 s hold.
-
-    """
+    """Stress relaxation over the 60 s hold."""
     relax_block = df[df["SetName"].astype(str).str.contains(
         SETNAME_STRESS_RELAX, case=False, na=False)].copy()
 
@@ -656,12 +643,14 @@ def analyze_failure(df: pd.DataFrame, CSA_true: float, sample_length: float) -> 
 
     max_mod = strain_at_mod = stress_at_mod = np.nan
     disp_at_mod = force_at_mod = time_at_mod = np.nan
+    mod_intercept = mod_r2 = np.nan
+    mod_n_points = 0
 
-    m_lin, strain_lin, stress_lin, global_idx = compute_sliding_window_modulus(
-        fail, CSA_true, sample_length
-    )
+    mod = compute_sliding_window_modulus(fail, CSA_true, sample_length)
+    global_idx = mod["global_idx"]
     if global_idx is not None:
-        max_mod, strain_at_mod, stress_at_mod = m_lin, strain_lin, stress_lin
+        max_mod, strain_at_mod, stress_at_mod = mod["modulus"], mod["strain"], mod["stress"]
+        mod_intercept, mod_r2, mod_n_points = mod["intercept"], mod["r2"], mod["n_points"]
         force_at_mod = float(fail["Force_N"].loc[global_idx])
         time_at_mod = float(fail["Time_S"].loc[global_idx])
         disp_at_mod = float(fail["Displacement_mm"].loc[global_idx])
@@ -679,6 +668,9 @@ def analyze_failure(df: pd.DataFrame, CSA_true: float, sample_length: float) -> 
         "disp_at_mod": disp_at_mod,
         "force_at_mod": force_at_mod,
         "time_at_mod": time_at_mod,
+        "mod_intercept": mod_intercept,
+        "mod_r2": mod_r2,
+        "mod_n_points": mod_n_points,
         "qc": qc,
     }
 
@@ -723,7 +715,7 @@ def analyze_dataframe(df: pd.DataFrame, meta: pd.Series, plot_dir: Path,
     if make_plots:
         plot_dir.mkdir(parents=True, exist_ok=True)
         save_force_time_plot(df, str(ft_path))
-        # The modulus point is marked, providing a per-sample visual audit for QC
+        # Mark the modulus point for a per-sample visual QC check.
         save_force_extension_plot(fail_res["fail_df"], str(fe_path),
                                   disp_mod=fail_res["disp_at_mod"],
                                   force_mod=fail_res["force_at_mod"])
@@ -761,6 +753,9 @@ def analyze_dataframe(df: pd.DataFrame, meta: pd.Series, plot_dir: Path,
         "Time at max modulus (s)": fail_res["time_at_mod"],
         "Force at max modulus (N)": fail_res["force_at_mod"],
         "Displacement at max modulus (mm)": fail_res["disp_at_mod"],
+        "Max modulus fit R2": fail_res["mod_r2"],
+        "Max modulus fit intercept (MPa)": fail_res["mod_intercept"],
+        "Max modulus fit n points": fail_res["mod_n_points"],
 
         "SNR preconditioning": pre_res["qc"]["snr"],
         "SNR hold": hold_res["qc"]["snr"],
@@ -783,7 +778,7 @@ def analyze_dataframe(df: pd.DataFrame, meta: pd.Series, plot_dir: Path,
         "Range hold pass": hold_res["qc"]["range_pass"],
         "Range failure pass": fail_res["qc"]["range_pass"],
 
-        # Overall per-segment QC verdicts. Reported only; exclusion is applied in downstream analysis/plotting
+        # Overall per-segment QC verdicts. Reported only; exclusion happens downstream.
         "Preconditioning pass": pre_res["qc"]["pass"],
         "Hold pass": hold_res["qc"]["pass"],
         "Failure pass": fail_res["qc"]["pass"],
@@ -807,9 +802,11 @@ def analyze_dataframe(df: pd.DataFrame, meta: pd.Series, plot_dir: Path,
 #   "210330 MRC Sample A10Data_SetNa"   (SetName -> SetNa)
 #   "210330 MRC Sample A1Data_Force_"   (Force_N -> Force_)
 # Matching therefore has to accept any non-empty PREFIX of the canonical suffix.
+
+KNOWN_SUFFIXES = ("SetName", "Cycle", "Force_N", "Displacement_mm", "Size_mm")
 KNOWN_SUFFIXES = ("SetName", "Cycle", "Force_N", "Displacement_mm", "Size_mm")
 
-# Below this many characters a truncated suffix stops being uniquely identifiable (e.g. "S" could be SetName or Size_mm), so need minimum
+# Below this length a truncated suffix is no longer unique (e.g. "S" -> SetName or Size_mm).
 MIN_SUFFIX_CHARS = 3
 
 # Columns in the compiled files that are not per-sample data.
@@ -824,10 +821,7 @@ def _suffix_matches(remainder: str, expected: str) -> bool:
 
 
 def find_col(df: pd.DataFrame, base: str, expected_suffix: str) -> str | None:
-    """
-    Find the column for `base` carrying `expected_suffix`, tolerating truncation.
-    The suffix is matched as a truncated prefix rather than in full, because the 31-character Excel limit clips it (see KNOWN_SUFFIXES above).
-    """
+    """Find the column for `base` carrying `expected_suffix`, tolerating truncation (see KNOWN_SUFFIXES)."""
     prefix = f"{base}_"
     matches = []
     for c in df.columns:
@@ -837,7 +831,7 @@ def find_col(df: pd.DataFrame, base: str, expected_suffix: str) -> str | None:
         remainder = s[len(prefix):]
         if not _suffix_matches(remainder, expected_suffix):
             continue
-        # A remainder truncated so hard that it fits several canonical suffixes cannot be assigned safely; flag rather than guess.
+        # If the remainder fits several canonical suffixes, flag rather than guess.
         rivals = [x for x in KNOWN_SUFFIXES
                   if x != expected_suffix and _suffix_matches(remainder, x)]
         if rivals:
@@ -857,9 +851,7 @@ def find_col(df: pd.DataFrame, base: str, expected_suffix: str) -> str | None:
 
 
 def sample_bases(force_df: pd.DataFrame) -> list[str]:
-    """
-    Sample base names, taken from the SetName column of each sample.
-    """
+    """Sample base names, taken from each sample's SetName column."""
     bases = []
     for col in force_df.columns:
         s = str(col)
@@ -887,9 +879,8 @@ def sample_bases(force_df: pd.DataFrame) -> list[str]:
 # Metadata lookup
 # ---------------------------------------------------------------------
 
-# Fallback: pull (Date_ID, Sample_ID, Replicate) out of a column base name.
-# It discards anything after the replicate digits.
-# E.g. '...Sample C3.2Data' and '...Sample C3Data' both reduce to (C, 3), as do '...Sample A10bData' and '...Sample A10Data'.
+# Fallback: pull (Date_ID, Sample_ID, Replicate) from a column base name,
+# discarding anything after the replicate digits (e.g. 'Sample C3.2Data' -> (C, 3)).
 BASE_NAME_RE = re.compile(r"(\d{6}).*Sample\s*([A-Z])\s*([0-9]+)")
 
 
@@ -897,10 +888,8 @@ def lookup_metadata(metadata: pd.DataFrame, base: str):
     """
     Find the metadata row for a sample, returning (rows, how).
 
-    Prefers an exact match on the metadata's FileName column, which is unique
-    per recording and preserves the distinctions that the name regex throws away.
-
-    Returns (None, how) if the base cannot be resolved at all.
+    Prefers an exact match on the FileName column, falling back to the name
+    regex. Returns (None, how) if the base cannot be resolved at all.
     """
     if "FileName" in metadata.columns:
         target = f"{base}.csv"
@@ -925,9 +914,7 @@ def lookup_metadata(metadata: pd.DataFrame, base: str):
 # ---------------------------------------------------------------------
 
 def clean_results_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Tidy the results table.
-    """
+    """Tidy the results table, coercing text columns to numeric where safe."""
     df = df.copy()
     for col in df.columns:
         if col in NON_NUMERIC_RESULT_COLS:
@@ -943,7 +930,7 @@ def clean_results_frame(df: pd.DataFrame) -> pd.DataFrame:
             .replace({"nan": np.nan, "None": np.nan, "": np.nan})
         )
         converted = pd.to_numeric(cleaned, errors="coerce")
-        # Only adopt the numeric version if nothing that looked like a value was lost.
+        # Only go numeric if no real value was lost in the conversion.
         if converted.notna().sum() == cleaned.notna().sum():
             df[col] = converted
         else:
