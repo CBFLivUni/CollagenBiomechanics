@@ -60,19 +60,6 @@ SNR_THRESHOLD = 3
 RESIDUAL_THRESHOLD = 0.08
 RANGE_THRESHOLD = 0.01
 
-# SNR settings (peak-over-baseline-noise definition).
-# Noise is estimated on the quiescent 1-Preload phase, mirroring the signal-free
-# baseline used by the SNR filter in 02_failure_profile_clustering.qmd, so that
-# the same SNR >= SNR_THRESHOLD criterion means the same thing in both scripts.
-SNR_SAVGOL_WINDOW = 101       # smoothing window for the peak (signal) estimate
-SNR_SAVGOL_POLY = 3
-SNR_BASELINE_MAX_POINTS = 50  # samples of preload (nearest loading) used for noise SD
-# Load-cell force quantisation step (N). A perfectly flat preload has an SD at
-# the quantisation floor, not zero; the noise estimate is floored at the SD of a
-# uniform quantisation error over one step (q/sqrt(12)) so that a clean, heavily
-# quantised baseline yields a large-but-finite SNR rather than dividing by ~0.
-FORCE_RESOLUTION_N = 0.005
-
 # Stress relaxation
 HOLD_DURATION_S = 60.0        # hold duration
 PEAK_WINDOW_S = 2.0           # window from start of hold within which peak stress is taken
@@ -306,64 +293,26 @@ def savgol_deriv_safe(y, window: int, poly: int, delta: float) -> np.ndarray:
 # QC filters
 # ---------------------------------------------------------------------
 
-def compute_snr(force, cycle=None, window: int = SNR_SAVGOL_WINDOW,
-                poly: int = SNR_SAVGOL_POLY,
-                baseline_max: int = SNR_BASELINE_MAX_POINTS) -> float:
+def compute_snr(y) -> float:
     """
-    Peak-to-baseline signal-to-noise ratio.
+    Heuristic SNR from raw force data:
+      - baseline correction (y - y[0])
+      - signal = max(y)
+      - noise = std(diff(y))
 
-        signal = peak of the smoothed force, above the preload baseline level
-        noise  = SD of the raw force over the quiescent 1-Preload phase
-                 (a signal-free region the instrument records before loading)
-
-    Estimating noise on the preload baseline — rather than from std(diff) over
-    the whole segment — keeps the real loading gradient and the failure event
-    out of the noise estimate. This mirrors the SNR filter in
-    02_failure_profile_clustering.qmd, which measures noise on the signal-free
-    pre-onset baseline of the failure curve; here the instrument's labelled
-    1-Preload phase provides the equivalent signal-free region for every segment
-    (preconditioning, hold and failure), so one SNR >= SNR_THRESHOLD criterion
-    applies consistently across both scripts.
-
-    `cycle` is the per-sample cycle label for the segment. When it is absent,
-    the leading `baseline_max` samples are used as the baseline instead. Returns
-    NaN when no usable baseline or positive signal can be found, in which case
-    the segment cannot pass the SNR filter.
+    Note for the Methods: for white noise of SD sigma, std(diff(y)) ~ sigma*sqrt(2),
+    so a threshold of 3 corresponds to roughly 4.2 sigma.
     """
-    force = np.asarray(force, dtype=float)
-
-    # ---- locate the signal-free baseline ----
-    baseline_vals = None
-    if cycle is not None:
-        pre_mask = pd.Series(cycle).astype(str).str.contains(
-            CYCLE_PRELOAD, case=False, na=False).to_numpy()
-        if pre_mask.any():
-            b = force[pre_mask]
-            b = b[np.isfinite(b)]
-            if len(b) >= 2:
-                # samples nearest load application best represent noise at onset
-                baseline_vals = b[-baseline_max:] if len(b) > baseline_max else b
-    if baseline_vals is None:
-        ff = force[np.isfinite(force)]
-        if len(ff) >= 2:
-            baseline_vals = ff[:baseline_max]
-    if baseline_vals is None or len(baseline_vals) < 2:
+    y = np.asarray(y, dtype=float)
+    if len(y) < 10:
         return np.nan
-
-    noise = float(np.std(baseline_vals))
-    # Floor at the quantisation noise so a flat, quantisation-limited preload
-    # does not divide the signal by a spuriously tiny SD.
-    noise = max(noise, FORCE_RESOLUTION_N / np.sqrt(12.0))
-    if not np.isfinite(noise) or noise <= 0:
+    y = y - y[0]
+    if np.nanstd(y) == 0:
         return np.nan
-
-    # ---- signal: peak of the smoothed trace above the preload level ----
-    baseline_level = float(np.mean(baseline_vals))
-    y = force[np.isfinite(force)] - baseline_level
-    if len(y) < 5:
+    noise = np.nanstd(np.diff(y))
+    signal = np.nanmax(y)
+    if not np.isfinite(noise) or noise == 0:
         return np.nan
-    f_smooth = apply_savgol_safe(y, window, poly)
-    signal = float(np.max(f_smooth))
     if not np.isfinite(signal) or signal <= 0:
         return np.nan
     return signal / noise
@@ -391,44 +340,30 @@ def compute_signal_range(y) -> float:
     return np.max(y) - np.min(y)
 
 
-def segment_qc(y, cycle, label: str, gate_snr: bool = True) -> dict:
-    """
-    Compute the three QC metrics and their pass flags for one segment.
-
-    `gate_snr` controls whether SNR contributes to the overall pass/fail. The
-    peak-over-preload SNR is only well-posed for the failure curve, whose
-    1-Preload phase is a genuine quiescent baseline. For the gentle
-    preconditioning (and, less severely, the hold) the preload is a held tension
-    rather than a signal-free zero, so a low SNR there reflects the baseline, not
-    a bad specimen. This mirrors 02_failure_profile_clustering.qmd, which applies
-    the SNR filter to the failure curve only. SNR is still computed and reported
-    for every segment as a diagnostic; it just does not gate the gentle ones.
-    """
-    snr = compute_snr(y, cycle)
+def segment_qc(y, label: str) -> dict:
+    """Compute the three QC metrics and their pass flags for one segment."""
+    snr = compute_snr(y)
     resid = compute_residual_ratio(y)
     rng = compute_signal_range(y)
 
     snr_pass = bool(snr >= SNR_THRESHOLD) if np.isfinite(snr) else False
     resid_pass = bool(resid <= RESIDUAL_THRESHOLD) if np.isfinite(resid) else False
     rng_pass = bool(rng >= RANGE_THRESHOLD) if np.isfinite(rng) else False
-    overall = (snr_pass or not gate_snr) and resid_pass and rng_pass
+    overall = snr_pass and resid_pass and rng_pass
 
     if not overall:
-        log.info("  FILTER FAILED: %s (snr=%.3g%s resid=%.3g range=%.3g)",
-                 label, snr, "" if gate_snr else " [not gated]", resid, rng)
+        log.info("  FILTER FAILED: %s (snr=%.3g resid=%.3g range=%.3g)", label, snr, resid, rng)
 
     return {
         "snr": snr, "resid": resid, "range": rng,
         "snr_pass": snr_pass, "resid_pass": resid_pass, "range_pass": rng_pass,
-        "snr_gated": gate_snr,
         "pass": overall,
     }
 
 
 def empty_qc() -> dict:
     return {"snr": np.nan, "resid": np.nan, "range": np.nan,
-            "snr_pass": False, "resid_pass": False, "range_pass": False,
-            "snr_gated": True, "pass": False}
+            "snr_pass": False, "resid_pass": False, "range_pass": False, "pass": False}
 
 
 # ---------------------------------------------------------------------
@@ -522,7 +457,7 @@ def analyze_preconditioning(df: pd.DataFrame, CSA_true: float) -> dict:
     if pre.empty:
         return {"_ok": False, "_reason": "no preconditioning segment"}
 
-    qc = segment_qc(pre["Force_N"], pre["Cycle"], "pre-conditioning", gate_snr=False)
+    qc = segment_qc(pre["Force_N"], "pre-conditioning")
 
     sample_length = float(pre["Size_mm"].iloc[0])
     if not np.isfinite(sample_length) or sample_length == 0:
@@ -589,7 +524,7 @@ def analyze_hold(df: pd.DataFrame, CSA_true: float) -> dict:
         log.info("  ! No 'Stress-relax' segment found.")
         return out
 
-    out["qc"] = segment_qc(relax_block["Force_N"], relax_block["Cycle"], "stress-relax", gate_snr=False)
+    out["qc"] = segment_qc(relax_block["Force_N"], "stress-relax")
 
     cycles = relax_block["Cycle"].astype(str)
     preload = relax_block[cycles.str.contains(CYCLE_PRELOAD, case=False, na=False)]
@@ -640,7 +575,7 @@ def analyze_failure(df: pd.DataFrame, CSA_true: float, sample_length: float) -> 
     if fail.empty:
         return {"_ok": False, "_reason": "no failure segment (SetName did not contain 'fail')"}
 
-    qc = segment_qc(fail["Force_N"], fail["Cycle"], "failure")
+    qc = segment_qc(fail["Force_N"], "failure")
 
     fail["Load_corr"] = fail["Force_N"] - fail["Force_N"].iloc[0]
     fail["Disp_corr"] = fail["Displacement_mm"] - fail["Displacement_mm"].iloc[0]

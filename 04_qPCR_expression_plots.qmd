@@ -16,9 +16,7 @@ code-block-border-left: "#31BAE9"
 
 # Summary plots
 
-Relative expression of *Col1a1* and *Col1a2* (normalised to *Rps13*) in tendon and
-bone across three timepoints, plus the *Col1a1*/*Col1a2* ratio. All six panels
-share the same layout, so they are read and plotted through one pipeline.
+Relative expression of *Col1a1* and *Col1a2* (normalised to *Rps13*) in tendon and bone across three timepoints, plus the *Col1a1*/*Col1a2* ratio. All six panels share the same layout, so they are read and plotted through one pipeline.
 
 ## Libraries
 
@@ -36,9 +34,7 @@ library(scales)
 
 ## Read and tidy
 
-One CSV per gene, tissue and timepoint (Windows `latin1`). `Genotype` arrives
-quoted (e.g. `"""J +/+"""`); the quotes are stripped and combined with `Sex` into
-the x-axis grouping. J = *oim* line, N = *Col1a2*-null.
+One CSV per gene, tissue and timepoint. `Genotype` arrives quoted (e.g. `"""J +/+"""`); the quotes are stripped and combined with `Sex` into the x-axis grouping. J = *oim* line, N = *Col1a2*-null.
 
 ```{r}
 #| warning: false
@@ -91,9 +87,7 @@ expr <- expr_files |>
   unnest(data)
 ```
 
-The ratio is derived per sample: the *Col1a1* and *Col1a2* files are matched on
-tissue, timepoint and row position (they carry identical genotype/sex in the same
-order).
+The ratio is derived per sample: the *Col1a1* and *Col1a2* files are matched on tissue, timepoint and row position (they carry identical genotype/sex in the same order).
 
 ```{r}
 ratio <- expr |>
@@ -117,8 +111,7 @@ group_stats <- dat_long |>
 
 ## Plotting
 
-Points are coloured by sex; the sex prefix orders the groups and is stripped from
-the tick labels. Expression is plotted on log10, the ratio on log2.
+Points are coloured by sex; the sex prefix orders the groups and is stripped from the tick labels. Expression is plotted on log10, the ratio on log2.
 
 ```{r}
 sex_cols <- c(Female = "#E69F00", Male = "#0072B2")

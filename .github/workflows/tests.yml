@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+# Cancel an in-progress run when new commits are pushed to the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: unit + regression
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # login shell so `conda activate` is in effect for every step
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up conda environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          environment-file: environment.yml
+          activate-environment: collagen-biomechanics
+          auto-activate-base: false
+
+      - name: Show environment
+        run: |
+          conda info
+          python --version
+          pytest --version   # fails fast with a clear message if pytest isn't in environment.yml
+
+      - name: Run tests
+        run: pytest -v
