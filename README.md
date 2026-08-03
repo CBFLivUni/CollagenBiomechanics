@@ -1,3 +1,5 @@
+![tests](https://github.com/CBFLivUni/CollagenBiomechanics/actions/workflows/tests.yml/badge.svg)
+
 # Type I collagen-driven tendon biomechanics
 
 Analysis code accompanying:
