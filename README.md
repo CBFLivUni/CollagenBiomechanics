@@ -51,7 +51,6 @@ CollagenBiomechanics/
 │   ├── make_test_data.sh
 │
 ├── 01_biomechanical_processing.py
-├── 01_biomechanical_processing_revised.py
 ├── 02_failure_profile_clustering.qmd
 ├── 03_biomechanic_properties_plots.qmd
 ├── environment.yml
