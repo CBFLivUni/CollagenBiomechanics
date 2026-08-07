@@ -284,7 +284,7 @@ def compute_snr(force, cycle=None, window: int = SNR_SAVGOL_WINDOW,
     """
     force = np.asarray(force, dtype=float)
 
-    # ---- locate the signal-free baseline ----
+    # locate the signal-free baseline
     baseline_vals = None
     if cycle is not None:
         pre_mask = pd.Series(cycle).astype(str).str.contains(
@@ -308,7 +308,7 @@ def compute_snr(force, cycle=None, window: int = SNR_SAVGOL_WINDOW,
     if not np.isfinite(noise) or noise <= 0:
         return np.nan
 
-    # ---- signal: peak of the smoothed trace above the preload level ----
+    # signal: peak of the smoothed trace above the preload level 
     baseline_level = float(np.mean(baseline_vals))
     y = force[np.isfinite(force)] - baseline_level
     if len(y) < 5:
@@ -393,11 +393,9 @@ def compute_sliding_window_modulus(fail_df: pd.DataFrame, CSA_true: float,
                                    sample_length: float,
                                    window_size_strain: float = MODULUS_STRAIN_WINDOW) -> dict:
     """
-    Maximum tangent modulus from a strain window slid along the pre-peak
-    stress-strain curve, restricted to 5-60% of peak stress.
+    Maximum tangent modulus from a strain window slid along the pre-peak stress-strain curve, restricted to 5-60% of peak stress.
 
-    Returns a dict with the modulus (slope), strain/stress at the modulus point,
-    its global index, and goodness-of-fit for the winning window (intercept, R2,number of points).
+    Returns a dict with the modulus (slope), strain/stress at the modulus point, its global index, and goodness-of-fit for winning window (intercept, R2,number of points).
     """
     force = fail_df["Force_N"].to_numpy(float)
     disp = fail_df["Displacement_mm"].to_numpy(float)
@@ -870,8 +868,7 @@ def lookup_metadata(metadata: pd.DataFrame, base: str):
     """
     Find the metadata row for a sample, returning (rows, how).
 
-    Prefers an exact match on the FileName column, falling back to the name
-    regex. Returns (None, how) if the base cannot be resolved at all.
+    Prefers an exact match on the FileName column, falling back to the name regex. Returns (None, how) if the base cannot be resolved at all.
     """
     if "FileName" in metadata.columns:
         target = f"{base}.csv"
