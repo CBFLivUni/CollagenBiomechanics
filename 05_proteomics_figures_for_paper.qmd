@@ -1,0 +1,743 @@
+---
+title: "Proteomics"
+subtitle: "Figures for paper"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+
+# Proteomics figures
+
+These data were originally processed by Joan Chang. The full analysis/results are included in the 'proteomics' folder. However, for the paper we do some additional post-processing for the figures.
+
+Both fractions are handled together throughout: **F1 = soluble fraction**, **F2 = insoluble fraction**. We read in the previously processed results (`Comparison_results.xlsx`, `Protein_list.xlsx`, `GO_results.xlsx`) from `results/proteomics/`
+
+The four experimental groups are:
+
+| Group | Genotype | Background |
+|-------|----------|------------|
+| A | Wt for *oim* | C57BL/6J |
+| B | *oim/oim* homozygote | C57BL/6J |
+| C | Wt for *Col1a2* null | C57BL/6N |
+| D | *Col1a2* null (-/-, tm1b) | C57BL/6N |
+
+## Libraries
+
+```{r}
+#| output: false
+#| warning: false
+#| message: false
+library(mixOmics)      # PCA
+library(clusterProfiler)
+library(ReactomePA)    # GSEA against Reactome
+library(org.Mm.eg.db)
+library(tidyverse)     
+library(readxl)        # read the results tables
+library(ggbeeswarm)    # beeswarm / quasirandom points
+library(cowplot)       # theme_cowplot(), plot_grid(), save_plot()
+library(ggrepel)       # non-overlapping volcano labels
+library(patchwork)     # PCA panel assembly
+library(ggtext)        # markdown in strips/labels
+library(glue)
+library(scales)
+```
+
+## Stylings
+
+```{r}
+#| warning: false
+#| message: false
+
+# Fractions: names are the labels used in the figures, values are the results sub-folders
+fractions <- c("Soluble fraction" = "F1_soluble", "Insoluble fraction" = "F2_insoluble")
+
+results_dir <- "results/proteomics"
+fig_dir     <- "figures/proteomics/paper"
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Groups
+group_labels <- c(Group_A = "WT (BL6/J)",
+                  Group_B = "*oim/oim*",
+                  Group_C = "WT (BL6/N)",
+                  Group_D = "*Col1a2*<sup>-/-</sup>")
+
+group_cols <- set_names(c("#33A02C", "#B2DF8A", "#E3211C", "#FB9A99"), group_labels)
+
+
+# Contrasts, in the order they are displayed (msqrob2 coefficient names = figure labels)
+contrast_labels <- c(
+  "conditionGroup_B"                    = "*oim/oim* vs WT (BL6/J)",
+  "conditionGroup_D - conditionGroup_C" = "*Col1a2*<sup>-/-</sup> vs WT (BL6/N)",
+  "conditionGroup_C"                    = "WT (BL6/N) vs WT (BL6/J)",
+  "conditionGroup_D - conditionGroup_B" = "*Col1a2*<sup>-/-</sup> vs *oim/oim*"
+)
+
+# GO tables label the same contrasts differently
+go_labels <- c("Group B vs. Group A" = contrast_labels[[1]],
+               "Group D vs. Group C" = contrast_labels[[2]],
+               "Group C vs. Group A" = contrast_labels[[3]],
+               "Group D vs. Group B" = contrast_labels[[4]])
+
+# Direction colours, shared by the volcano plots, the GO plot and the GSEA plot
+direction_cols <- c("Down-regulated" = "dodgerblue3",
+                    "Unchanged"      = "black",
+                    "Up-regulated"   = "firebrick3")
+
+# Diverging scale for NES, as used for the heatmaps in the CBF SOP
+nes_cols <- c(low = "#4858A7", mid = "#D6DAE1", high = "#B51F29")
+
+# Significance thresholds used throughout (as in the original reports)
+fdr_cutoff   <- 0.05
+logFC_cutoff <- 0.5
+
+# Shared theme elements for the faceted panels
+facet_theme <- theme(
+  strip.background = element_rect(fill = "grey95", colour = "black"),
+  strip.text       = element_markdown(size = 11),
+  panel.spacing    = grid::unit(0.6, "lines")
+)
+```
+
+## Read original figures in
+
+Saved as .rds files...
+
+The original figures live in `figures/proteomics/F1_soluble/` and `figures/proteomics/F2_insoluble/`.
+They can be read back in and restyled, but for this paper it is cleaner to replot from the results tables:
+
+The chunk below reads them in if you want to inspect or reuse any of them.
+
+```{r}
+#| eval: false
+#| warning: false
+#| message: false
+
+original_figures <-
+  list.files("figures/proteomics", pattern = "\\.rds$", full.names = TRUE, recursive = TRUE) |>
+  set_names(\(x) str_remove(x, "figures/proteomics/")) |>
+  map(readRDS)
+
+names(original_figures)
+
+# e.g. restyle one of the saved ggplots
+original_figures[["F1_soluble/volcano_BvsA.rds"]] + theme_cowplot(12)
+```
+
+## Read in the results tables
+
+One reader for the three tables, applied over both fractions, giving long tables with a `Fraction` column that the plots use. (Note the results are found under: `results/proteomics`.)
+
+```{r}
+#| warning: false
+#| message: false
+
+read_results <- function(file) {
+  imap(fractions, \(dir, label) read_excel(file.path(results_dir, dir, file))) |>
+    bind_rows(.id = "Fraction") |>
+    mutate(Fraction = factor(Fraction, levels = names(fractions)))
+}
+
+# Differential abundance (msqrob2 output, all four contrasts stacked)
+de_results <- read_results("Comparison_results.xlsx") |>
+  filter(!is.na(adjPval)) |>
+  mutate(Contrast = factor(unname(contrast_labels[contrast]), levels = contrast_labels))
+
+# Protein-level intensities (log2, normalised, robustly summarised)
+protein_wide <- read_results("Protein_list.xlsx")
+
+protein_long <- protein_wide |>
+  pivot_longer(starts_with("Group_"), names_to = "Sample", values_to = "Intensity") |>
+  mutate(Group = factor(str_remove(Sample, "_\\d+$"),
+                        levels = names(group_labels),
+                        labels = group_labels))
+
+# GO over-representation results (from the original reports; not plotted below)
+go_results <- read_results("GO_results.xlsx") |>
+  mutate(Contrast = factor(unname(go_labels[comparison]), levels = contrast_labels))
+```
+
+## Volcano plots
+
+```{r}
+#| warning: false
+#| message: false
+
+# Adapted version of my usual volcano function
+plotVolcano <- function(x, title = "", top.genes = NULL, point.size = 0.5, lab.size = 4,
+                        quadrants = FALSE, foldChangeColumn = "logFC", FDRColumn = "adj.P.Val",
+                        logFCThreshold = 0.5, adjPValThreshold = 0.05,
+                        colours = c("Down-regulated" = "dodgerblue3",
+                                    "Unchanged"      = "#B3B3B3",
+                                    "Up-regulated"   = "firebrick3")) {
+
+  x <- as.data.frame(x)
+
+  # Input validation
+  if (!all(c(foldChangeColumn, FDRColumn) %in% colnames(x))) {
+    stop("`x` must contain the columns '", foldChangeColumn, "' and '", FDRColumn, "'.", call. = FALSE)
+  }
+  if (is.null(rownames(x))) {
+    stop("`x` must have row names giving the feature names.", call. = FALSE)
+  }
+  if ("Genes" %in% colnames(x)) {
+    stop("`x` already contains a column named 'Genes'; this name is reserved. Please rename it.", call. = FALSE)
+  }
+  if (!all(c("Down-regulated", "Unchanged", "Up-regulated") %in% names(colours))) {
+    stop("`colours` must be named 'Down-regulated', 'Unchanged' and 'Up-regulated'.", call. = FALSE)
+  }
+
+  x <- x |>
+    rownames_to_column(var = "Genes") |>
+    rename("logFC" = all_of(foldChangeColumn), "adj.P.Val" = all_of(FDRColumn))
+
+  # Guard against -log10(0) = Inf, which silently drops points off the plot
+  zero_p <- !is.na(x$adj.P.Val) & x$adj.P.Val <= 0
+  if (any(zero_p)) {
+    positive_p <- x$adj.P.Val[x$adj.P.Val > 0]
+    min_nonzero <- if (length(positive_p)) min(positive_p, na.rm = TRUE) else .Machine$double.xmin
+    x$adj.P.Val[zero_p] <- min_nonzero
+    warning(sum(zero_p), " adjusted p-value(s) were <= 0 and have been reset to ",
+            signif(min_nonzero, 3), " to avoid infinite -log10 values.", call. = FALSE)
+  }
+
+  x <- x |>
+    mutate(
+      Expression = case_when(
+        logFC >=  logFCThreshold & adj.P.Val <= adjPValThreshold ~ "Up-regulated",
+        logFC <= -logFCThreshold & adj.P.Val <= adjPValThreshold ~ "Down-regulated",
+        TRUE ~ "Unchanged"
+      )
+    )
+
+  x$Expression <- factor(x$Expression, levels = c("Down-regulated", "Unchanged", "Up-regulated"))
+  myColors <- colours[levels(x$Expression)]
+
+  volcano_plot <- ggplot(x, aes(logFC, -log10(adj.P.Val))) +
+    geom_point(aes(color = Expression), size = point.size) +
+    xlab(expression("log"[2]*"FC")) +
+    ylab(expression("-log"[10]*"FDR")) +
+    scale_color_manual(name = "Expression", values = myColors, drop = FALSE) +
+    theme_cowplot() +
+    ggtitle(title) +
+    theme(legend.position = "none")
+
+  if (quadrants) {
+    volcano_plot <- volcano_plot +
+      geom_hline(yintercept = -log10(adjPValThreshold), linetype = "dashed", size=0.3) +
+      geom_vline(xintercept = c(-logFCThreshold, logFCThreshold), linetype = "dashed", size=0.3)
+  }
+
+  if (!is.null(top.genes)) {
+    top_genes <- bind_rows(
+      x |> filter(Expression == "Up-regulated")   |> arrange(adj.P.Val, desc(abs(logFC))) |> head(top.genes),
+      x |> filter(Expression == "Down-regulated") |> arrange(adj.P.Val, desc(abs(logFC))) |> head(top.genes)
+    )
+
+    if (nrow(top_genes) > 0) {
+      volcano_plot <- volcano_plot +
+        geom_text_repel(data = top_genes, aes(label = Genes),
+                        size = lab.size, max.overlaps = Inf, min.segment.length = 0, seed = 42)
+    }
+  }
+
+  return(volcano_plot)
+}
+```
+
+One row of four contrasts per fraction, assembled with `plot_grid()` and given a heading with
+`ggdraw()`/`draw_label()`. 
+
+```{r}
+#| fig-width: 18
+#| fig-height: 5
+#| warning: false
+#| message: false
+
+volcano_figures <- names(fractions) |>
+  set_names() |>
+  map(\(frac) {
+
+    fraction_data <- de_results |>
+      filter(Fraction == frac) |>
+      mutate(Label = coalesce(Gene, Protein))
+
+    panels <- levels(fraction_data$Contrast) |>
+      set_names() |>
+      map(\(ctr) {
+        d <- fraction_data |>
+          filter(Contrast == ctr) |>
+          select(Label, logFC, adjPval) |>
+          as.data.frame()
+        rownames(d) <- make.unique(d$Label)
+
+        plotVolcano(d[, c("logFC", "adjPval")],
+                    title = ctr,
+                    top.genes = 5,
+                    quadrants = TRUE,
+                    FDRColumn = "adjPval",
+                    logFCThreshold = logFC_cutoff,
+                    adjPValThreshold = fdr_cutoff) +
+          theme(plot.title = element_markdown(size = 13))
+      })
+
+    header <- ggdraw() +
+      draw_label(frac, fontface = "bold", size = 15, x = 0.005, hjust = 0) +
+      theme(plot.margin = margin(0, 0, 0, 7))
+
+    plot_grid(header,
+              plot_grid(plotlist = panels, ncol = 4, align = "hv"),
+              ncol = 1, rel_heights = c(0.09, 1))
+  })
+
+volcano_figures[["Soluble fraction"]]
+```
+
+```{r}
+#| fig-width: 18
+#| fig-height: 5
+#| warning: false
+#| message: false
+
+volcano_figures[["Insoluble fraction"]]
+```
+
+```{r}
+#| warning: false
+#| message: false
+
+iwalk(volcano_figures, \(p, frac) {
+  save_plot(file.path(fig_dir, glue("volcano_{str_replace(tolower(frac), ' ', '_')}.pdf")), p,
+            ncol = 4, base_height = 4.6, base_width = 4.5, bg = "white")
+})
+```
+
+Counts of differentially abundant proteins behind each panel, for the results text:
+
+```{r}
+#| warning: false
+#| message: false
+
+de_results |>
+  mutate(Expression = case_when(adjPval <= fdr_cutoff & logFC >=  logFC_cutoff ~ "Up-regulated",
+                                adjPval <= fdr_cutoff & logFC <= -logFC_cutoff ~ "Down-regulated",
+                                .default = "Unchanged")) |>
+  filter(Expression != "Unchanged") |>
+  count(Fraction, Contrast, Expression) |>
+  mutate(Contrast = str_remove_all(as.character(Contrast), "\\*|<sup>|</sup>")) |>
+  pivot_wider(names_from = Expression, values_from = n, values_fill = 0) |>
+  knitr::kable(caption = "Proteins passing FDR < 0.05 and |log2FC| > 0.5")
+```
+
+## PCA plots
+
+This follows the PCA from the original reports: proteins with more than 20% missing values are
+removed, the remainder are imputed with NIPALS, and `mixOmics::pca()` is run on the centred (unscaled) data with three components.
+
+```{r}
+#| fig-width: 11
+#| fig-height: 4.8
+#| warning: false
+#| message: false
+
+pca_plots <- names(fractions) |>
+  set_names() |>
+  map(\(label) {
+
+    mat <- protein_wide |>
+      filter(Fraction == label) |>
+      select(starts_with("Group_")) |>
+      as.matrix()
+
+    # Remove proteins not quantified in more than 20% of samples, then impute with NIPALS
+    mat <- t(mat[rowMeans(is.na(mat)) <= 0.2, ])
+    set.seed(123)
+    mat <- mixOmics::impute.nipals(mat, ncomp = nrow(mat))
+
+    pca <- mixOmics::pca(X = mat, ncomp = 3, center = TRUE, scale = FALSE)
+    # mixOmics < 6.11 stores this as pca$explained_variance
+    var_expl <- pca$prop_expl_var$X * 100
+
+    as_tibble(pca$variates$X[, 1:2], rownames = "Sample") |>
+      mutate(Group = factor(str_remove(Sample, "_\\d+$"),
+                            levels = names(group_labels), labels = group_labels)) |>
+      ggplot(aes(x = PC1, y = PC2, colour = Group)) +
+      stat_ellipse(type = "norm", level = 0.95, linewidth = 0.4, show.legend = TRUE) +
+      geom_point(size = 3) +
+      scale_colour_manual(values = group_cols) +
+      labs(x = glue("PC1: {round(var_expl[1])}% expl. var"),
+           y = glue("PC2: {round(var_expl[2])}% expl. var"),
+           title = label) +
+      theme_cowplot(12) +
+      theme(plot.title   = element_text(size = 13),
+            legend.title = element_blank(),
+            legend.text  = element_markdown())
+  })
+
+pca_grid <- wrap_plots(pca_plots, ncol = 2) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+pca_grid
+
+save_plot(file.path(fig_dir, "pca_grid.pdf"), pca_grid,
+          ncol = 2, base_height = 3.8, base_width = 3.5, bg = "white")
+```
+
+
+## Box plots
+
+Selected proteins across the four groups. Ten proteins per fraction: the *Col1a2*/*Col1a1* pair (the genotype anchor) plus the largest and most consistent effects across the contrasts. `goi` is a list keyed by fraction, so the soluble and insoluble figures can show different proteins if required.
+
+```{r}
+#| warning: false
+#| message: false
+
+# Candidate proteins: significant in both fractions, ranked by effect size
+de_results |>
+  filter(adjPval <= fdr_cutoff, abs(logFC) >= logFC_cutoff, !is.na(Gene)) |>
+  summarise(fractions = n_distinct(Fraction),
+            contrasts = n_distinct(Contrast),
+            max_logFC = max(abs(logFC)), .by = Gene) |>
+  filter(fractions == 2) |>
+  arrange(desc(max_logFC)) |>
+  head(20)
+```
+
+```{r}
+#| warning: false
+#| message: false
+
+goi <- list(
+  "Soluble fraction"   = c("Col1a1", "Mmp3", "Dpt", "Matn4", "Lox", "Col1a2", "Ecm2", "Ogn", "Kera", "Prg4"),
+  "Insoluble fraction" = c("Col1a1", "Mmp3", "Dpt", "Matn4", "Lox", "Col1a2", "Ecm2", "Ogn", "Kera", "Prg4")
+)
+
+
+
+
+# Mmp3, Matn4, Kera and Ecm2
+
+# Check no gene maps to more than one protein group (which would silently pool accessions)
+protein_long |>
+  distinct(Fraction, Gene, Protein) |>
+  count(Fraction, Gene) |>
+  filter(Gene %in% unlist(goi), n > 1)
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 2.7
+#| warning: false
+#| message: false
+
+# outliers = FALSE needs ggplot2 >= 3.5.0; use outlier.shape = NA on older versions
+box_figures <- names(fractions) |>
+  set_names() |>
+  map(\(frac) {
+
+    box_data <- protein_long |>
+      filter(Fraction == frac, Gene %in% goi[[frac]]) |>
+      mutate(Gene = factor(Gene, levels = goi[[frac]]))
+
+    panels <-
+      ggplot(box_data, aes(x = Group, y = Intensity)) +
+      
+      geom_quasirandom(aes(colour = Group), width = 0.12, size = 1.8, alpha = 0.9,
+                       stroke = 0, na.rm = TRUE) +
+      geom_boxplot(fill = NA, width = 0.35, linewidth = 0.4, outliers = FALSE, na.rm = TRUE) +
+      facet_wrap(~ Gene, nrow = 2, scales = "free_y",
+                 labeller = labeller(Gene = \(x) as.character(glue("*{x}*")))) +
+      scale_colour_manual(values = group_cols) +
+      labs(y = expression("log"[2]*" protein intensity")) +
+      theme_cowplot(12) +
+      facet_theme +
+      theme(legend.position    = "bottom",
+            legend.title       = element_blank(),
+            legend.text        = element_markdown(),
+            axis.title.x       = element_blank(),
+            # groups are read from the legend; swap in
+            # element_markdown(angle = 40, hjust = 1) to label every panel instead
+            axis.text.x        = element_blank(),
+            axis.ticks.x       = element_blank(),
+            panel.grid.major.y = element_line(colour = "grey92", linewidth = 0.3))
+
+    header <- ggdraw() +
+      draw_label(frac, fontface = "bold", size = 15, x = 0.005, hjust = 0) +
+      theme(plot.margin = margin(0, 0, 0, 7))
+
+    plot_grid(header, panels, ncol = 1, rel_heights = c(0.06, 1))
+  })
+
+box_figures[["Soluble fraction"]]
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 2.7
+#| warning: false
+#| message: false
+
+box_figures[["Insoluble fraction"]]
+```
+
+```{r}
+#| warning: false
+#| message: false
+
+iwalk(box_figures, \(p, frac) {
+  save_plot(file.path(fig_dir, glue("boxplots_{str_replace(tolower(frac), ' ', '_')}_tall.pdf")), p,
+            base_height = 4, base_width = 7.5, bg = "white")
+})
+```
+
+Proteins are not quantified in every sample, so some groups show fewer than three points;
+`na.rm = TRUE` drops those.
+
+
+## GSEA
+
+GSEA uses the full ranked protein list rather than only the proteins passing the significance
+thresholds, so coordinated shifts across a pathway are detected even when few individual proteins
+clear the FDR cut-off, often useful when there are few significant hits. Proteins
+are ranked by the moderated t-statistic from msqrob2, and all eight ranked lists (4 contrasts x
+2 fractions) go into a single `compareCluster()` call, so the same permutation settings and
+multiple-testing correction apply across every comparison. The same ranked lists are used for
+both the Reactome and the GO analyses below.
+
+```{r}
+#| warning: false
+#| message: false
+
+# Map gene symbols to Entrez IDs (required by ReactomePA and gseGO)
+gene_map <- bitr(unique(na.omit(de_results$Gene)),
+                 fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Mm.eg.db)
+
+ranked_data <- de_results |>
+  inner_join(gene_map, by = c("Gene" = "SYMBOL")) |>
+  # one entry per Entrez ID per list, keeping the strongest statistic
+  group_by(Fraction, Contrast, ENTREZID) |>
+  slice_max(abs(t), n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  mutate(Cluster = factor(paste(Fraction, Contrast, sep = " | "),
+                          levels = paste(rep(names(fractions), each = length(contrast_labels)),
+                                         contrast_labels, sep = " | ")))
+
+# split() names the list from the factor levels, which sets the panel order downstream
+ranked_lists <- split(ranked_data, ranked_data$Cluster, drop = TRUE) |>
+  map(\(d) sort(set_names(d$t, d$ENTREZID), decreasing = TRUE))
+
+map_int(ranked_lists, length)
+```
+
+Two functions shared by the Reactome and GO sections: one to unpack a `compareCluster()` result
+back into `Fraction`/`Contrast` columns, and one to build the dot plots. Colour and size scales are
+computed across both fractions so the two figures of a given analysis can be compared directly.
+
+```{r}
+#| warning: false
+#| message: false
+
+tidy_gsea <- function(x) {
+  as_tibble(x) |>
+    separate_wider_delim(Cluster, delim = " | ", names = c("Fraction", "Contrast")) |>
+    mutate(Fraction  = factor(Fraction, levels = names(fractions)),
+           Contrast  = factor(Contrast, levels = contrast_labels),
+           Direction = factor(if_else(NES > 0, "Up-regulated", "Down-regulated"),
+                              levels = names(direction_cols)))
+}
+
+# Returns one dot plot per fraction: contrasts on x, pathways/terms on y, colour = NES, size = set size
+gsea_dotplot <- function(results, n_per_contrast = 5, wrap_width = 45) {
+
+  nes_limit  <- max(abs(results$NES))
+  size_range <- range(results$setSize)
+
+  names(fractions) |>
+    set_names() |>
+    map(\(frac) {
+
+      fraction_results <- results |> filter(Fraction == frac)
+
+      top_terms <- fraction_results |>
+        group_by(Contrast) |>
+        slice_min(p.adjust, n = n_per_contrast, with_ties = FALSE) |>
+        ungroup() |>
+        distinct(Description) |>
+        pull(Description)
+
+      fraction_results |>
+        filter(Description %in% top_terms) |>
+        mutate(Description = fct_reorder(str_wrap(Description, wrap_width), NES, .fun = mean),
+               Contrast    = fct_drop(Contrast)) |>
+        ggplot(aes(x = Contrast, y = Description)) +
+        geom_point(aes(colour = NES, size = setSize)) +
+        scale_colour_gradient2(low = nes_cols[["low"]], mid = nes_cols[["mid"]],
+                               high = nes_cols[["high"]], midpoint = 0,
+                               limits = c(-nes_limit, nes_limit)) +
+        scale_size_continuous(range = c(2, 7), limits = size_range, name = "Set size") +
+        labs(title = frac, x = NULL, y = NULL) +
+        theme_cowplot(12) +
+        theme(plot.title       = element_text(size = 13),
+              axis.text.x      = element_markdown(angle = 30, hjust = 1),
+              axis.text.y      = element_text(size = 9),
+              panel.grid.major = element_line(colour = "grey92", linewidth = 0.3))
+    })
+}
+```
+
+### Reactome pathways
+
+```{r}
+#| warning: false
+#| message: false
+
+set.seed(123)
+gsea_reactome <- compareCluster(geneClusters  = ranked_lists,
+                                fun           = "gsePathway",
+                                organism      = "mouse",
+                                minGSSize     = 10,
+                                maxGSSize     = 500,
+                                pvalueCutoff  = fdr_cutoff,
+                                pAdjustMethod = "BH",
+                                seed          = TRUE,
+                                verbose       = FALSE)
+
+gsea_reactome <- setReadable(gsea_reactome, OrgDb = org.Mm.eg.db, keyType = "ENTREZID")
+
+reactome_results <- tidy_gsea(gsea_reactome)
+
+write_csv(reactome_results, file.path(fig_dir, "gsea_reactome_results.csv"))
+
+reactome_results |>
+  count(Fraction, Contrast, Direction) |>
+  pivot_wider(names_from = Direction, values_from = n, values_fill = 0) |>
+  mutate(Contrast = str_remove_all(as.character(Contrast), "\\*|<sup>|</sup>")) |>
+  knitr::kable(caption = "Significantly enriched Reactome pathways (FDR < 0.05)")
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+#| warning: false
+#| message: false
+
+reactome_plots <- gsea_dotplot(reactome_results, n_per_contrast = 5)
+
+reactome_plots[["Soluble fraction"]]
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+#| warning: false
+#| message: false
+
+reactome_plots[["Insoluble fraction"]]
+```
+
+Empty cells are pathways that were not significant in that contrast, so a row with a single filled
+point is specific to one comparison and a row filled across all four is a consistent shift. Raise
+`n_per_contrast` for a fuller picture or lower it if the figures get too tall.
+
+```{r}
+#| warning: false
+#| message: false
+
+iwalk(reactome_plots, \(p, frac) {
+  save_plot(file.path(fig_dir, glue("gsea_reactome_{str_replace(tolower(frac), ' ', '_')}.pdf")), p,
+            base_height = 8, base_width = 10, bg = "white")
+})
+```
+
+`enrichplot::dotplot(gsea_reactome, showCategory = 5, split = ".sign") + facet_grid(. ~ .sign)`
+gives the standard `compareCluster` view of the same object if you want it for the supplement.
+
+### GO terms
+
+The same ranked lists run against GO biological process. GO is far more redundant than Reactome -
+parent and child terms covering the same proteins both come through - so `simplify()` is applied to
+collapse terms with a semantic similarity above 0.7, keeping the most significant of each set.
+That step uses GOSemSim and takes a few minutes; skip it if you would rather see the raw output, or
+change `ont` to "MF"/"CC" for the other ontologies.
+
+```{r}
+#| warning: false
+#| message: false
+
+set.seed(123)
+gsea_go <- compareCluster(geneClusters  = ranked_lists,
+                          fun           = "gseGO",
+                          OrgDb         = org.Mm.eg.db,
+                          ont           = "BP",
+                          keyType       = "ENTREZID",
+                          minGSSize     = 10,
+                          maxGSSize     = 500,
+                          pvalueCutoff  = fdr_cutoff,
+                          pAdjustMethod = "BH",
+                          seed          = TRUE,
+                          verbose       = FALSE)
+
+# Collapse redundant parent/child terms
+gsea_go <- clusterProfiler::simplify(gsea_go, cutoff = 0.7, by = "p.adjust", select_fun = min)
+
+gsea_go <- setReadable(gsea_go, OrgDb = org.Mm.eg.db, keyType = "ENTREZID")
+
+go_gsea_results <- tidy_gsea(gsea_go)
+
+write_csv(go_gsea_results, file.path(fig_dir, "gsea_go_bp_results.csv"))
+
+go_gsea_results |>
+  count(Fraction, Contrast, Direction) |>
+  pivot_wider(names_from = Direction, values_from = n, values_fill = 0) |>
+  mutate(Contrast = str_remove_all(as.character(Contrast), "\\*|<sup>|</sup>")) |>
+  knitr::kable(caption = "Significantly enriched GO BP terms after simplification (FDR < 0.05)")
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+#| warning: false
+#| message: false
+
+go_gsea_plots <- gsea_dotplot(go_gsea_results, n_per_contrast = 5)
+
+go_gsea_plots[["Soluble fraction"]]
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+#| warning: false
+#| message: false
+
+go_gsea_plots[["Insoluble fraction"]]
+```
+
+```{r}
+#| warning: false
+#| message: false
+
+iwalk(go_gsea_plots, \(p, frac) {
+  save_plot(file.path(fig_dir, glue("gsea_go_bp_{str_replace(tolower(frac), ' ', '_')}.pdf")), p,
+            base_height = 6, base_width = 7, bg = "white")
+})
+```
+
+Note that the GO and Reactome figures have independent colour scales, since each is scaled to its
+own NES range... compare within an analysis rather than between the two.
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

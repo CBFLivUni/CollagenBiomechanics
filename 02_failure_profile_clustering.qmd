@@ -18,6 +18,8 @@ code-block-border-left: "#31BAE9"
 
 Failure profiles are classified using DTW clustering on the full failure curve (absolute force in N, absolute displacement in mm), interpolated onto a common grid spanning the observed displacement range. This preserves both curve shape and scale.
 
+Sample inclusion is taken from the results summary written by `01_biomechanical_processing.py`: a sample enters clustering only if it passes the QC column selected below. QC is therefore defined once, in the processing script, rather than recomputed inline here.
+
 ## Load libraries
 
 ```{r}
@@ -25,14 +27,11 @@ Failure profiles are classified using DTW clustering on the full failure curve (
 #| warning: false
 #| message: false
 library(tidyverse)
-library(readxl)
 library(dtwclust)
 library(signal)
 library(cowplot)
-library(ggrepel)
 library(doParallel)
-library(factoextra)
-library(cluster)
+library(doRNG)
 
 filter <- dplyr::filter  # signal::filter masks dplyr::filter
 ```
@@ -48,7 +47,6 @@ params <- list(
   onset_points     = 5L,     # consecutive points required to confirm onset
   sg_window        = 101L,    # Savitzky-Golay window 
   sg_poly          = 3L,     # Savitzky-Golay poly
-  min_snr          = 3.0,    # min peak/noise ratio; excludes distorted profiles
 
   # DTW clustering
   n_grid           = 300L,   # interpolation grid points
@@ -67,21 +65,27 @@ bright <- c(
   "#66CCEE",
   "#009988",
   "#AA4499",
-  )
+  "#CCBB44"   
+)
 ```
 
 ## Load data
 
 ```{r}
-meta_raw  <- read.csv("compiled_metadata_with_filenames.csv")
-force_raw <- read.csv("compiled_Force_N_fail_only.csv")
-disp_raw  <- read.csv("compiled_Displacement_mm_fail_only.csv")
+
+meta_raw    <- read.csv("raw_data/compiled_metadata_with_filenames.csv")
+results_raw <- read.csv("results/results_summary_050826.csv")
+force_raw   <- read.csv("raw_data/compiled_Force_N_fail_only.csv")
+disp_raw    <- read.csv("raw_data/compiled_Displacement_mm_fail_only.csv")
+
 ```
 
 ## Process metadata
 
 ```{r}
+
 meta <- meta_raw |>
+  rename(MouseID = 3) |>   # mouse ID column is literally named "." in the CSV
   mutate(
     sample_key = str_remove(FileName, "\\.csv$"),
     sample_key = gsub(" ", ".", sample_key)
@@ -89,6 +93,29 @@ meta <- meta_raw |>
   distinct(sample_key, .keep_all = TRUE)
 
 glimpse(meta)
+
+```
+
+## Failure QC from the processing script
+
+`SNR failure pass` is the SNR filter applied to the failure segment in `01_biomechanical_processing.py`. Swap `qc_column` to `Failure.pass` for the combined SNR / residual / range gate; the exclusion labels below follow whichever is set.
+
+```{r}
+
+qc_column <- "SNR.failure.pass"
+
+qc <- results_raw |>
+  transmute(
+    sample_key   = gsub(" ", ".", str_remove(File.name, "\\.csv$")),
+    failure_pass = as.logical(.data[[qc_column]])
+  ) |>
+  distinct(sample_key, .keep_all = TRUE)
+
+qc_pass_keys <- qc |> filter(failure_pass) |> pull(sample_key)
+
+cat("Samples in results summary:", nrow(qc), "\n")
+cat(qc_column, "= TRUE:", length(qc_pass_keys), "\n")
+
 ```
 
 ## Extract per-sample vectors
@@ -123,12 +150,17 @@ extract_sample_vectors <- function(raw_df, value_suffix_regex) {
 force_vecs <- extract_sample_vectors(force_raw, "_Force_?$")
 disp_vecs  <- extract_sample_vectors(disp_raw,  "_Displacement_?$")
 
-# Restrict to samples present in both DFs and accompanying metadata before processing
+# Restrict to samples present in both DFs and accompanying metadata, then to
+# those passing failure QC in the results summary
 common_keys <- Reduce(intersect, list(names(force_vecs),
                                       names(disp_vecs),
                                       meta$sample_key))
 
-cat("Samples entering preprocessing:", length(common_keys), "\n")
+qc_keys <- intersect(common_keys, qc_pass_keys)
+
+cat("Samples with paired traces and metadata:", length(common_keys), "\n")
+cat("Excluded by failure QC:", length(setdiff(common_keys, qc_keys)), "\n")
+cat("Samples entering preprocessing:", length(qc_keys), "\n")
 
 ```
 
@@ -141,11 +173,13 @@ Steps matched to the processing script:
 3. Smooth with Savitzky-Golay (window 101, poly 3)
 4. Onset detection on smoothed trace
 5. Trim from onset to end of recording to maintain post-peak shape
-6. SNR filter: exclude distorted/low-force profiles
 
-Displacement and force are retained in absolute units (mm and N).
+Displacement and force are retained in absolute units (mm and N). Signal-quality exclusion comes from the QC column selected above. The remaining `NULL` returns are structural e.g a curve too short to smooth, or with no
+detectable onset, cannot be interpolated onto the grid at all.
+
 
 ```{r}
+
 find_onset <- function(f_smooth, threshold, n_consec) {
   runs      <- rle(f_smooth > threshold)
   run_end   <- cumsum(runs$lengths)
@@ -185,14 +219,10 @@ preprocess_curve <- function(force_vec, disp_vec) {
   # Trim onset to end of recording (post-peak retained)
   f_trim <- f_smooth[onset_idx:length(f_smooth)]
   d_trim <- d[onset_idx:length(d)]
+  # d_trim <- d_trim - d_trim[1]  # uncomment to align curves at onset 
   peak_i <- peak_idx - onset_idx + 1L
 
   if (length(f_trim) < params$sg_window || peak_i < 3L) return(NULL)
-
-  # SNR filter
-  noise_sd <- sd(f[seq_len(min(50L, onset_idx - 1L))])
-  if (!is.na(noise_sd) && noise_sd > 0 &&
-      (f_trim[peak_i] / noise_sd) < params$min_snr) return(NULL)
 
   list(
     f_series = f_trim,
@@ -202,10 +232,10 @@ preprocess_curve <- function(force_vec, disp_vec) {
 }
 
 processed <- map(
-  common_keys,
+  qc_keys,
   \(k) preprocess_curve(force_vecs[[k]], disp_vecs[[k]])
 ) |>
-  set_names(common_keys)
+  set_names(qc_keys)
 
 
 n_dropped <- sum(map_lgl(processed, is.null))
@@ -219,7 +249,7 @@ cat("Series entering clustering:", length(processed), "\n")
 
 # DTW clustering
 
-Force (N) and displacement (mm) are in absolute units. Each curve is interpolated onto a common displacement grid spanning the 95th percentile of observed failure displacement — this avoids a small number of outlier specimens stretching the grid and wasting resolution on padding. Specimens with displacement shorter than the grid ceiling are padded by repeating their final observed force value.
+Force (N) and displacement (mm) are in absolute units. Each curve is interpolated onto a common displacement grid spanning the 95th percentile of observed failure displacement (this avoids a small number of outlier samples stretching the grid and wasting resolution on padding). Samples with displacement shorter than the grid ceiling are padded by repeating their final observed force value.
 
 ```{r}
 all_max_disp <- map_dbl(processed, \(p) max(p$d_series, na.rm = TRUE))
@@ -249,6 +279,7 @@ registerDoParallel(cl)
 clusterEvalQ(cl, library(dtwclust))
 
 set.seed(42)
+registerDoRNG(42)   # foreach workers need their own RNG streams
 win_size <- as.integer(params$n_grid * params$dtw_window)
 
 dtw_fits <- map(params$k_range, \(k) {
@@ -296,7 +327,7 @@ best_k_dtw <- cvi_df_dtw |>
     rank_D    = rank(-D),
     mean_rank = (rank_DB + rank_CH + rank_D) / 3
   ) |>
-  slice_min(mean_rank, n = 1) |>
+  slice_min(mean_rank, n = 1, with_ties = FALSE) |>
   pull(k)
 
 # best_k_dtw <- 6L  # override with biological prior if needed
@@ -305,11 +336,13 @@ cat("Best k — DTW (consensus):", best_k_dtw, "\n")
 dtw_best <- dtw_fits[[paste0("k", best_k_dtw)]]
 sil_dtw  <- cvi(dtw_best, type = "Sil")
 cat("Silhouette at best k:", round(sil_dtw, 3), "\n")
+
 ```
 
 ## Cluster assignments
 
 ```{r}
+
 assign_dtw <- tibble(
   sample_key  = names(series_dtw),
   cluster_dtw = as.integer(dtw_best@cluster)
@@ -317,19 +350,22 @@ assign_dtw <- tibble(
   left_join(meta, by = "sample_key")
 
 processed_keys <- names(processed)
-removed_keys   <- setdiff(common_keys, processed_keys)
 
-filtered_df <- tibble(
-  sample_key  = removed_keys,
-  cluster_dtw = 0
+# cluster_dtw = 0 for samples available but excluded, 100 for samples with no
+# usable failure trace; exclusion_reason records which gate dropped them
+excluded_df <- bind_rows(
+  tibble(sample_key       = setdiff(common_keys, qc_keys),
+         exclusion_reason = paste(qc_column, "not TRUE")),
+  tibble(sample_key       = setdiff(qc_keys, processed_keys),
+         exclusion_reason = "preprocessing failed")
 ) |>
+  mutate(cluster_dtw = 0) |>
   left_join(meta, by = "sample_key")
 
-not_processed_keys <- setdiff(meta$sample_key, common_keys)
-
 not_processed_df <- tibble(
-  sample_key  = not_processed_keys,
-  cluster_dtw = 100
+  sample_key       = setdiff(meta$sample_key, common_keys),
+  cluster_dtw      = 100,
+  exclusion_reason = "no paired failure trace"
 ) |>
   left_join(meta, by = "sample_key")
 
@@ -337,25 +373,24 @@ assign_dtw$cluster_dtw <- as.numeric(assign_dtw$cluster_dtw)
 
 assign_dtw_full <- bind_rows(
   assign_dtw,
-  filtered_df,
+  excluded_df,
   not_processed_df
 )
 
-names(assign_dtw_full)[5] <- "MouseID"
+count(assign_dtw_full, exclusion_reason)
 
-dir.create("outputs", showWarnings = FALSE)
+
+dir.create("figures", showWarnings = FALSE)
 
 write.csv(
   assign_dtw_full,
-  file = file.path("outputs", "dtw_cluster_assignments.csv"),
+  file = file.path("results", "dtw_cluster_assignments.csv"),
   row.names = FALSE
 )
 
 assign_dtw |>
   count(cluster_dtw, Genotype, Sex, Age) |>
   arrange(cluster_dtw)
-
-genotype_levels <- c("oim Hom", "oim Het", "oim Wt", "Tm1b Hom", "Tm1b Het", "Tm1b Wt")
 
 assign_dtw <- assign_dtw |>
   mutate(
@@ -379,7 +414,8 @@ assign_dtw <- assign_dtw |>
 
 ### Validation indices by k
 
-```{r fig.width=7, fig.height=4}
+```{r fig.width=12, fig.height=4}
+
 ch_p <- ggplot(cvi_df_dtw, aes(x = k, y = CH)) +
   geom_line(colour = "#31BAE9") +
   geom_point(size = 3, colour = "#31BAE9") +
@@ -393,11 +429,27 @@ ch_p <- ggplot(cvi_df_dtw, aes(x = k, y = CH)) +
 
 ch_p
 save_plot("figures/dtw_cvi.pdf", ch_p, base_width = 12, base_height = 4)
+
 ```
 
 ### Centroids with individual curves
 
-```{r fig.width=11, fig.height=5}
+```{r fig.width=9, fig.height=3}
+
+# QC-fail samples never entered clustering, so preprocess and interpolate them
+# here to show what is being excluded (structural failures return NULL)
+series_fail <- map(setdiff(common_keys, qc_keys),
+                   \(k) preprocess_curve(force_vecs[[k]], disp_vecs[[k]])) |>
+  set_names(setdiff(common_keys, qc_keys)) |>
+  keep(~ !is.null(.x)) |>
+  map(interpolate_to_grid)
+
+cat("QC-fail samples shown:", length(series_fail),
+    "of", length(setdiff(common_keys, qc_keys)), "\n")
+
+cluster_ids    <- sort(unique(assign_dtw$cluster_dtw))
+assign_colours <- c(set_names(bright[seq_along(cluster_ids)], as.character(cluster_ids)),
+                    "QC fail" = "grey55")
 
 centroid_df_dtw <- imap_dfr(dtw_best@centroids, \(cen, idx) {
   tibble(
@@ -407,15 +459,18 @@ centroid_df_dtw <- imap_dfr(dtw_best@centroids, \(cen, idx) {
   )
 })
 
-member_df_dtw <- imap_dfr(series_dtw, \(s, key) {
-  clust <- assign_dtw |> filter(sample_key == key) |> pull(cluster_dtw)
-  tibble(
-    disp_mm    = d_grid,
-    force_n    = as.numeric(s),
-    cluster    = as.character(clust),
-    sample_key = key
-  )
-})
+member_df_dtw <- bind_rows(
+  imap_dfr(series_dtw, \(s, key) {
+    tibble(disp_mm = d_grid, force_n = as.numeric(s), sample_key = key)
+  }) |>
+    left_join(assign_dtw |> select(sample_key, cluster_dtw), by = "sample_key") |>
+    mutate(cluster = as.character(cluster_dtw)),
+  imap_dfr(series_fail, \(s, key) {
+    tibble(disp_mm = d_grid, force_n = as.numeric(s), sample_key = key,
+           cluster = "QC fail")
+  })
+) |>
+  mutate(cluster = factor(cluster, levels = names(assign_colours)))
 
 cluster_labels <- assign_dtw |>
   count(cluster_dtw) |>
@@ -425,12 +480,14 @@ cluster_labels <- assign_dtw |>
                          "\n(n = ", n, ")")
   ) |>
   select(cluster_dtw, label) |>
-  deframe()
+  deframe() |>
+  c("QC fail" = paste0("QC fail\n(n = ", length(series_fail), ")"))
+
 centroid_p_dtw <- ggplot(mapping = aes(x = disp_mm, y = force_n, colour = cluster)) +
   geom_line(
     data      = member_df_dtw,
     aes(group = sample_key),
-    alpha     = 0.03,
+    alpha     = 0.05,
     linewidth = 0.15
   ) +
   geom_line(data = centroid_df_dtw, linewidth = 0.7) +
@@ -438,7 +495,7 @@ centroid_p_dtw <- ggplot(mapping = aes(x = disp_mm, y = force_n, colour = cluste
     ~ cluster, nrow = 1, scales = "fixed",
     labeller = labeller(cluster = cluster_labels)
   ) +
-  scale_colour_manual(values = bright) +
+  scale_colour_manual(values = assign_colours) +
   scale_y_continuous(
     limits = c(0, max(member_df_dtw$force_n) * 1.05),
     expand = expansion(mult = c(0, 0))
@@ -454,23 +511,51 @@ centroid_p_dtw <- ggplot(mapping = aes(x = disp_mm, y = force_n, colour = cluste
   )
 
 centroid_p_dtw
-save_plot("figures/dtw_centroids.pdf", centroid_p_dtw, base_width = 7.5, base_height = 3)
+save_plot("figures/dtw_centroids.pdf", centroid_p_dtw, base_width = 9, base_height = 3)
 
 ```
 
 ### Cluster composition by genotype
 
-```{r fig.width=7, fig.height=5}
+Composition is taken from `assign_dtw_full`, so samples excluded by QC appear alongside the clusters. Samples with no compiled failure trace are dropped entirely, so denominators are all samples of that genotype that were actually measured, making the QC-fail fraction directly comparable across groups.
 
-comp_dtw <- assign_dtw |>
-  count(cluster_dtw, Genotype) |>
-  mutate(cluster_dtw = factor(cluster_dtw)) |>
-  ggplot(aes(y = Genotype, x = n, fill = cluster_dtw)) +
+```{r}
+
+comp_df <- assign_dtw_full |>
+  dplyr::filter(cluster_dtw != 100) |>
+  mutate(
+    Assignment = if_else(cluster_dtw == 0, "QC fail", as.character(cluster_dtw)),
+    Assignment = factor(Assignment, levels = names(assign_colours)),
+    Genotype = factor(
+      Genotype,
+      levels = c(
+        "oim Wt", "oim Het", "oim Hom",
+        "Tm1b Wt", "Tm1b Het", "Tm1b Hom"
+      ),
+      labels = c(
+        "J +/+", "J +/oim", "J oim/oim",
+        "N +/+", "N +/-", "N -/-"
+      )
+    ),
+    Age = factor(Age, levels = c("8wks", "18wks", "52wks"))
+  )
+
+comp_df |>
+  count(Genotype, Assignment) |>
+  pivot_wider(names_from = Assignment, values_from = n, values_fill = 0)
+
+```
+
+```{r fig.width=7, fig.height=3.5}
+
+comp_dtw <- comp_df |>
+  count(Assignment, Genotype) |>
+  ggplot(aes(y = Genotype, x = n, fill = Assignment)) +
   geom_col(position = "fill", width = 0.7) +
   scale_x_continuous(labels = scales::percent_format(),
                      expand = expansion(mult = c(0, 0.02))) +
-  scale_fill_manual(values = bright) +
-  labs(x = "Proportion", y = NULL, fill = "Cluster") +
+  scale_fill_manual(values = assign_colours) +
+  labs(x = "Proportion", y = NULL, fill = "Assignment") +
   theme_cowplot() +
   theme(
     legend.position = "right",
@@ -479,28 +564,24 @@ comp_dtw <- assign_dtw |>
   )
 
 comp_dtw
-save_plot("figures/dtw_composition.pdf", comp_dtw, base_width = 12, base_height = 3.5)
+save_plot("figures/dtw_composition.pdf", comp_dtw, base_width = 7, base_height = 3.5)
 
 ```
 
-```{r}
+```{r fig.width=9, fig.height=4}
 
-comp_dtw_facet <- assign_dtw |>
-  count(cluster_dtw, Genotype, Age) |>
-  mutate(
-    cluster_dtw = factor(cluster_dtw),
-    Age         = factor(Age, levels = c("8wks", "18wks", "52wks"))
-  ) |>
+comp_dtw_facet <- comp_df |>
   dplyr::filter(!is.na(Age)) |>
-  ggplot(aes(x = Age, y = n, fill = cluster_dtw)) +
-  geom_col(position = "fill", width = 0.65) +
+  count(Assignment, Genotype, Age) |>
+  ggplot(aes(x = Age, y = n, fill = Assignment)) +
+  geom_col(position = "fill", width = 0.55) +
   scale_y_continuous(
     labels = scales::percent_format(),
     expand = expansion(mult = c(0, 0.02))
   ) +
-  scale_fill_manual(values = bright) +
+  scale_fill_manual(values = assign_colours) +
   facet_wrap(~ Genotype, nrow = 2, ncol = 3) +
-  labs(x = NULL, y = "Proportion", fill = "Cluster") +
+  labs(x = NULL, y = "Proportion", fill = "Assignment") +
   theme_cowplot() +
   theme(
     strip.background   = element_blank(),
@@ -512,7 +593,7 @@ comp_dtw_facet <- assign_dtw |>
 
 comp_dtw_facet
 save_plot("figures/dtw_composition_by_age.pdf", comp_dtw_facet,
-          base_width = 12, base_height = 4.5)
+          base_width = 9, base_height = 4)
 
 ```
 
