@@ -18,7 +18,8 @@ This repository takes the compiled instrument exports and calculates per-tendon 
 | `04_qPCR_expression_plots.qmd` | Manuscript figures for qPCR analysis (R). |
 | `05_proteomics_figures_for_paper.qmd` | Manuscript figures for proteomics analysis (R). |
 | `supporting_scripts/make_test_data.sh` | Script used to cut dataset down to a few samples for testing purposes (bash, needs `csvkit`). |
-| `tests/` | Unit and regression tests for `01_biomechanical_processing.py` — see [`tests/README.md`](tests/README.md). |
+| `tests/` | Unit and regression tests for `01_biomechanical_processing.py`. See [`tests/README.md`](tests/README.md). |
+| `results/` | Processed results files including outputs from the biomechanical processing script. |
 | `.github/workflows/tests.yml` | Continuous integration: runs `pytest` on push and pull request. |
 | `environment.yml` | Python environment. |
 | `renv.lock` | R environment. |
