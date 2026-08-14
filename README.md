@@ -1,4 +1,4 @@
-![tests](https://github.com/CBFLivUni/CollagenBiomechanics/actions/workflows/tests.yml/badge.svg)
+![tests](https://github.com/CBFLivUni/CollagenBiomechanics/actions/workflows/tests.yml/badge.svg) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21931221.svg)](https://doi.org/10.5281/zenodo.21931221)
 
 # Type I collagen-driven tendon biomechanics
 
