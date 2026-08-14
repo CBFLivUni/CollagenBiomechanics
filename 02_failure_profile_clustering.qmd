@@ -71,6 +71,14 @@ bright <- c(
 
 ## Load data
 
+It should be noted that `compiled_Force_N_fail_only.csv` and `compiled_Displacement_mm_fail_only.csv` were produced by filtering the main data files to the failure segments. The reason for this was that the files were too large/unwiedly to easily read into R.
+
+Readers can apply the same prefiltering by running:
+
+`grep -i "fail" compiled_Displacement_mm_phase_140526.1.csv >> compiled_Displacement_mm_fail_only.csv`
+
+`grep -i "fail" compiled_Force_N_phase_140526.1.csv >> compiled_Force_N_fail_only.csv`
+
 ```{r}
 
 meta_raw    <- read.csv("raw_data/compiled_metadata_with_filenames.csv")
@@ -120,8 +128,7 @@ cat(qc_column, "= TRUE:", length(qc_pass_keys), "\n")
 
 ## Extract per-sample vectors
 
-Each compiled file contains triplets of columns per sample (SetName, Cycle, value). SetName and value columns are matched by suffix regex. Non-failure rows are masked to NA; the result is a named list of numeric vectors.
-Note: this is because we are only comparing the shape of failure profiles here, we could do full profiles over time as an expanded analysis...
+Each compiled file contains triplets of columns per sample (SetName, Cycle, value). SetName and value columns are matched by suffix regex. Non-failure rows are masked to NA; the result is a named list of numeric vectors. Note: this is because we are only comparing the shape of failure profiles here, we could do full profiles over time as an expanded analysis...
 
 ```{r}
 
@@ -168,15 +175,13 @@ cat("Samples entering preprocessing:", length(qc_keys), "\n")
 
 Steps matched to the processing script:
 
-1. Retain finite paired observations
-2. Baseline correction: subtract initial force value
-3. Smooth with Savitzky-Golay (window 101, poly 3)
-4. Onset detection on smoothed trace
-5. Trim from onset to end of recording to maintain post-peak shape
+1.  Retain finite paired observations
+2.  Baseline correction: subtract initial force value
+3.  Smooth with Savitzky-Golay (window 101, poly 3)
+4.  Onset detection on smoothed trace
+5.  Trim from onset to end of recording to maintain post-peak shape
 
-Displacement and force are retained in absolute units (mm and N). Signal-quality exclusion comes from the QC column selected above. The remaining `NULL` returns are structural e.g a curve too short to smooth, or with no
-detectable onset, cannot be interpolated onto the grid at all.
-
+Displacement and force are retained in absolute units (mm and N). Signal-quality exclusion comes from the QC column selected above. The remaining `NULL` returns are structural e.g a curve too short to smooth, or with no detectable onset, cannot be interpolated onto the grid at all.
 
 ```{r}
 
@@ -245,7 +250,7 @@ cat("Series entering clustering:", length(processed), "\n")
 
 ```
 
----
+------------------------------------------------------------------------
 
 # DTW clustering
 
@@ -599,6 +604,7 @@ save_plot("figures/dtw_composition_by_age.pdf", comp_dtw_facet,
 
 ::: {.callout-note collapse="true"}
 ## Session Info
+
 ```{r}
 sessionInfo()
 ```

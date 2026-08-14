@@ -32,6 +32,7 @@ library(glue)
 ## Assay definitions
 
 One CSV per assay per timepoint. Headers contain en-dashes, so columns are matched by pattern and renamed. `metrics` maps the renamed column to its plot label; `figure` gives the output file stem.
+The files were manually produced from `results_summary_050826` to only include those that passed the QC flags.
 
 ```{r}
 data_dir   <- "./processed_data"
