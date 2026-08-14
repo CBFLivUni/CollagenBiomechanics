@@ -520,6 +520,42 @@ save_plot("figures/dtw_centroids.pdf", centroid_p_dtw, base_width = 9, base_heig
 
 ```
 
+```{r}
+# Plot QC fail processed traces directly, without interpolation or padding
+
+processed_fail <- map(
+  setdiff(common_keys, qc_keys),
+  \(k) preprocess_curve(force_vecs[[k]], disp_vecs[[k]])
+) |>
+  set_names(setdiff(common_keys, qc_keys)) |>
+  keep(~ !is.null(.x))
+
+
+fail_df <- imap_dfr(processed_fail, \(p, key) {
+  tibble(
+    disp_mm    = p$d_series,
+    force_n    = p$f_series,
+    sample_key = key
+  )
+})
+
+fail_p <- ggplot(fail_df, aes(x = disp_mm, y = force_n, group = sample_key)) +
+  geom_line(alpha = 0.35, linewidth = 0.25, colour = "grey55") +
+  labs(x = "Displacement (mm)", y = "Force (N)") +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.05))) +
+  theme_cowplot() +
+  theme(panel.grid.major.y = element_line(
+      colour = "grey92",
+      linewidth = 0.3),
+    panel.grid.minor = element_blank())
+
+fail_p
+
+save_plot("figures/dtw_qc_fail_traces.pdf", fail_p, base_width = 4.5, base_height = 3)
+
+```
+
 ### Cluster composition by genotype
 
 Composition is taken from `assign_dtw_full`, so samples excluded by QC appear alongside the clusters. Samples with no compiled failure trace are dropped entirely, so denominators are all samples of that genotype that were actually measured, making the QC-fail fraction directly comparable across groups.
