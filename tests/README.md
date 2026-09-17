@@ -20,7 +20,7 @@ The same command runs in continuous integration (`.github/workflows/tests.yml`).
 
 | File | Purpose |
 | --- | --- |
-| `conftest.py` | Loads the processing script as the module `biomech`. Needed because a module name cannot start with a digit. |
+| `conftest.py` | Loads the processing script as the module `biomech`. (Needed because a module name cannot start with a digit.) |
 | `test_biomechanics.py` | Unit tests for individual functions (calculations, column/metadata handling, QC metrics, input guards). |
 | `test_regression.py` | End-to-end test: runs the pipeline on the fixed data and compares the summary to the reference output. |
 | `compare_summary.py` | Column-by-column comparison of two `results_summary.csv` files, used by the regression test and runnable from the command line. |
@@ -30,10 +30,10 @@ The same command runs in continuous integration (`.github/workflows/tests.yml`).
 
 ## What the unit tests cover
 
-- **Calculations** — modulus of a linear stress-strain curve, hysteresis of a load/unload loop, stress relaxation of a known decay, and stress scaling with force.
-- **Columns and metadata** — matching of truncated column names, date and replicate normalisation, and the FileName-based metadata join.
-- **QC metrics** — SNR estimated on the preload baseline, its noise floor, and the rule that SNR gates only the failure segment.
-- **Guards** — bad inputs (zero cross-sectional area, short or missing segments) return NaN / not-OK flags rather than raising.
+- **Calculations**: modulus of a linear stress-strain curve, hysteresis of a load/unload loop, stress relaxation of a known decay, and stress scaling with force.
+- **Columns and metadata**: matching of truncated column names, date and replicate normalisation, and the FileName-based metadata join.
+- **QC metrics**: SNR estimated on the preload baseline, its noise floor, and the rule that SNR gates only the failure segment.
+- **Safety/guards**: bad inputs (zero cross-sectional area, short or missing segments) return NaN / not-OK flags rather than raising.
 
 ## The regression test and the reference output
 
