@@ -87,7 +87,7 @@ CollagenBiomechanics/
 
 The compiled .csv files are too large for GitHub and are archived separately:
 
-> **DataCat: https://elements.liverpool.ac.uk/viewobject.html?cid=1&id=1051512 **
+> DataCat: https://elements.liverpool.ac.uk/viewobject.html?cid=1&id=1051512
 > University of Liverpool Research Data Catalogue
 
 1. Download the data archive from the DataCat record above.
