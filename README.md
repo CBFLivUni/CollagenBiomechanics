@@ -8,7 +8,11 @@ Analysis code accompanying:
 
 This repository takes the compiled instrument exports and calculates per-tendon biomechanical parameters, clusters failure profiles, and produces the figures in the manuscript.
 
-![image](https://github.com/CBFLivUni/CollagenBiomechanics/blob/main/summary_figure.jpg?raw=true)
+<p align="center">
+  <img src="https://github.com/CBFLivUni/CollagenBiomechanics/blob/main/summary_figure.jpg?raw=true" 
+       alt="Graphical abstract"
+       width="600" />
+</p>
 
 ## Contents
 
