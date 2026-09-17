@@ -11,7 +11,7 @@ This repository takes the compiled instrument exports and calculates per-tendon 
 <p align="center">
   <img src="https://github.com/CBFLivUni/CollagenBiomechanics/blob/main/summary_figure.jpg?raw=true" 
        alt="Graphical abstract"
-       width="600" />
+       width="550" />
 </p>
 
 ## Contents
